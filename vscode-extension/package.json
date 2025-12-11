@@ -9,7 +9,8 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:threads.showLastState",
-    "onCommand:threads.saveStateNow"
+    "onCommand:threads.saveStateNow",
+    "onCommand:threads.openSummaryFile"
   ],
   "main": "./out/extension.js",
   "scripts": {
@@ -25,6 +26,10 @@
       {
         "command": "threads.saveStateNow",
         "title": "Threads: Save State Now"
+      },
+      {
+        "command": "threads.openSummaryFile",
+        "title": "Threads: Open Last Summary Markdown"
       }
     ],
     "configuration": {

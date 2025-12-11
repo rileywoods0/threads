@@ -9,11 +9,12 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 
 ## Quick test flow
 1. In the Extension Development Host, open the `testing` folder as the workspace.
-2. Confirm the status bar shows `Threads`.
+2. Confirm the status bar shows `Threads`. Click it to open the snapshot panel.
 3. Open and save any file in `testing/src/` (e.g., `demo.py`, `demo.ts`, `notes.md`) to emit `file_edit` and `file_focus` events.
-4. Run the command **Threads: Save State Now** to end the current session and start a new one.
-5. Run **Threads: Show Last State** to open the snapshot panel; you should see the files you touched and a summary. Use **Copy summary** to check clipboard handling.
-6. Watch the backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
+4. Use **Threads: Save State Now** from the Command Palette (Ctrl+Shift+P) to end the session, generate a snapshot, and immediately start a new one. This also writes `.threads/last-session.md` in the workspace with a markdown summary that LLMs can ingest.
+5. Use **Threads: Show Last State** to open the snapshot webview; verify sections and the copy-summary button.
+6. Use **Threads: Open Last Summary Markdown** to open the generated `.threads/last-session.md` file.
+7. Watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 
 ## Optional: backend smoke check from this folder
 ```powershell
@@ -24,3 +25,4 @@ This will hit `/health` and `/session/start` with the current repo path.
 ## Notes
 - `.vscode/settings.json` here pins `threads.backendUrl` to `http://localhost:8000` and shortens the flush interval for faster feedback.
 - The sample files in `src/` cover multiple languages to exercise event payloads.
+- The markdown summary lives at `.threads/last-session.md` after you save a session—perfect to hand to Copilot/Cursor/Claude as context when reopening the project.
