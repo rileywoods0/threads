@@ -1,0 +1,47 @@
+{
+  "name": "threads-memory",
+  "displayName": "Threads Memory Prototype",
+  "description": "Capture and recall developer context using a Threads backend.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:threads.showLastState",
+    "onCommand:threads.saveStateNow"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "threads.showLastState",
+        "title": "Threads: Show Last State"
+      },
+      {
+        "command": "threads.saveStateNow",
+        "title": "Threads: Save State Now"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Threads",
+      "properties": {
+        "threads.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL for the Threads backend API"
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
