@@ -4,16 +4,16 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.config import settings
-from backend.memory import generate_memory_snapshot
-from backend.schemas import (
+from .config import settings
+from .memory import generate_memory_snapshot
+from .schemas import (
     EndSessionRequest,
     EventsRequest,
     LatestSnapshotResponse,
     StartSessionRequest,
     StartSessionResponse,
 )
-from backend.supabase_client import supabase
+from .supabase_client import supabase
 
 
 app = FastAPI(title="Threads Memory Backend", version="0.1.0")

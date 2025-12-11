@@ -1,6 +1,6 @@
 # Threads Prototype (Supabase)
 
-Threads is a lightweight developer memory prototype with a FastAPI backend powered by Supabase and a VS Code extension that captures local activity.
+Threads is a lightweight developer memory prototype with a FastAPI backend backed by Supabase and a VS Code extension that captures local activity.
 
 ## Repository Layout
 - `backend/` – FastAPI app, Supabase client, memory heuristics, and SQL schema.
@@ -22,19 +22,33 @@ Threads is a lightweight developer memory prototype with a FastAPI backend power
    ```
 
 ## Backend
-### Install
+### Install (use a virtualenv to avoid dependency conflicts)
 ```bash
 cd backend
+python -m venv .venv
+. .venv/Scripts/activate   # Windows
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
 ### Run the API
+Run from the repository root so the `backend` package is importable:
 ```bash
-cd backend
+cd ..
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
+If you prefer running from inside `backend/`, add the project root to `PYTHONPATH`:
+```bash
+set PYTHONPATH=.. && uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-### Endpoints
+### Quick API Check
+```bash
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/session/start -H "Content-Type: application/json" ^
+  -d "{\"root_path\":\"C:/Github/threads\",\"project_name\":\"threads\"}"
+```
+Endpoints:
 - `POST /session/start` – upsert project by `root_path` and start a session.
 - `POST /events` – batch insert IDE events for a session.
 - `POST /session/end` – mark session ended and write a heuristic memory snapshot.
@@ -55,7 +69,7 @@ npm install
 
 ### Behavior
 - On activation, the extension detects the workspace root and calls `POST /session/start` on the backend.
-- Captures events (`save`, active editor changes, debug start/stop) and batches them to `POST /events` every 5 seconds.
+- Captures events (save, active editor changes, debug start/stop) and batches them to `POST /events` every 5 seconds.
 - On shutdown or the `Threads: Save State Now` command, pending events are flushed and `POST /session/end` is called.
 - `Threads: Show Last State` opens a webview that renders the most recent snapshot from `GET /project/latest_snapshot`.
 
