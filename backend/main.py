@@ -165,12 +165,7 @@ def end_session(payload: SessionEndRequest):
         "created_at": _now().isoformat(),
     }
 
-    insert_response = (
-        supabase.table("memory_snapshots")
-        .insert(snapshot_record)
-        .select("*")
-        .execute()
-    )
+    insert_response = supabase.table("memory_snapshots").insert(snapshot_record).execute()
     if getattr(insert_response, "error", None):
         logger.error("Supabase error inserting snapshot: %s", insert_response.error)
         raise HTTPException(status_code=500, detail="Failed to store memory snapshot")

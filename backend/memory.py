@@ -1,13 +1,33 @@
 """Heuristic memory snapshot generation for Threads sessions."""
 
+import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_event_data(raw: Any) -> Dict[str, Any]:
+    """Ensure event.data is a dictionary even if Supabase returned a JSON string."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+            if isinstance(decoded, dict):
+                return decoded
+        except json.JSONDecodeError:
+            logger.warning("Unable to decode event data string: %s", raw)
+    return {}
 
 
 def _collect_files(events: List[Dict[str, Any]]) -> List[str]:
     files: Set[str] = set()
     for event in events:
-        data = event.get("data") or {}
+        data = _parse_event_data(event.get("data"))
         file_path = data.get("filePath") or data.get("file") or data.get("path")
         if file_path:
             files.add(str(file_path))

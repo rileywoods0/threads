@@ -56,10 +56,10 @@ npm run compile
 ### Debug Workflow
 1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
 2. In the dev host, open the Threads repo workspace.
-3. Confirm the status bar shows `Threads` (clicking opens the latest snapshot).
-4. Make edits, change active files, and start/stop the debugger to queue events.
-5. Use **Threads: Save State Now** to end the current session and start a new one.
-6. Use **Threads: Show Last State** to open the webview with the most recent snapshot (copy the summary to clipboard from the panel).
+  3. Confirm the status bar shows `Threads` (clicking opens the latest snapshot).
+  4. Make edits, change active files, and start/stop the debugger to queue events.
+  5. Use **Threads: Save State Now** to end the current session, create a snapshot, and start a new one. This also writes `.threads/last-session.md` so AI assistants can pick up prior context.
+  6. Use **Threads: Show Last State** to open the webview with the most recent snapshot (copy the summary to clipboard from the panel) or **Threads: Open Last Summary Markdown** to view the markdown file directly.
 
 Backend logs should show `/session/start`, `/events`, `/session/end`, and `/project/latest_snapshot` calls. Supabase tables should update accordingly.
 

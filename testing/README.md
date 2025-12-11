@@ -16,6 +16,8 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 6. Use **Threads: Open Last Summary Markdown** to open the generated `.threads/last-session.md` file.
 7. Watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 
+> Tip: run commands from the Command Palette, not the Debug Console, to avoid syntax errors.
+
 ## Optional: backend smoke check from this folder
 ```powershell
 .\scripts\backend-smoke.ps1 -BackendUrl "http://localhost:8000" -RootPath (Resolve-Path "..")
