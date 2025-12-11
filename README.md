@@ -1,28 +1,25 @@
 # Threads Prototype (Supabase)
 
-Threads is a lightweight developer memory prototype with a FastAPI backend backed by Supabase and a VS Code extension that captures local activity.
+Threads is a developer memory prototype with a FastAPI backend (Supabase storage) and a VS Code extension that captures IDE activity to build lightweight memory snapshots.
 
 ## Repository Layout
-- `backend/` - FastAPI app, Supabase client, memory heuristics, and SQL schema.
-- `vscode-extension/` - VS Code extension that captures editor events and renders the latest memory snapshot.
+- `backend/` – FastAPI app, Supabase client, memory heuristics, and SQL schema.
+- `vscode-extension/` – VS Code extension that captures editor events and renders the latest memory snapshot.
 
 ## Supabase Setup
-1. Create a Supabase project (or reuse the provided one).
-2. Run the SQL in `backend/supabase_schema.sql` to create the required tables:
-   - `projects`
-   - `sessions`
-   - `events`
-   - `memory_snapshots`
-3. Configure environment variables (a `.env` file is supported):
+1. Create (or reuse) a Supabase project.
+2. Apply the schema in `backend/supabase_schema.sql` via the SQL editor.
+3. Add a local `.env` file in the repo root with:
    ```bash
-   SUPABASE_URL=https://dffscxoafddkvrufdvyi.supabase.co
-   SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmZnNjeG9hZmRka3ZydWZkdnlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU0MTU1NTgsImV4cCI6MjA4MDk5MTU1OH0.9VU0WImp606m_wO86DVn1F-XziosAYtFunnkZpKd1Qg
+   SUPABASE_URL=<your project url>
+   SUPABASE_SERVICE_ROLE_KEY=<service role key>
    API_HOST=0.0.0.0
    API_PORT=8000
    ```
+   The backend reads these automatically (see `backend/config.py`). Keep keys out of version control.
 
 ## Backend
-### Install (use a virtualenv to avoid dependency conflicts)
+### Install (use a virtualenv)
 ```bash
 cd backend
 python -m venv .venv
@@ -32,49 +29,68 @@ python -m pip install -r requirements.txt
 ```
 
 ### Run the API
-Run from the repository root so the `backend` package is importable:
+From the repository root:
 ```bash
-cd ..
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
-If you prefer running from inside `backend/`, add the project root to `PYTHONPATH`:
-```bash
-set PYTHONPATH=.. && uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-```
+If running from inside `backend/`, set `PYTHONPATH=..`.
 
-### Quick API Check
+### Quick Checks
 ```bash
 curl http://localhost:8000/health
-curl -X POST http://localhost:8000/session/start -H "Content-Type: application/json" ^
-  -d "{\"root_path\":\"C:/Github/threads\",\"project_name\":\"threads\"}"
+curl -X POST http://localhost:8000/session/start \
+  -H "Content-Type: application/json" \
+  -d '{"root_path":"/path/to/workspace","project_name":"threads"}'
 ```
-Endpoints:
-- `POST /session/start` - upsert project by `root_path` and start a session.
-- `POST /events` - batch insert IDE events for a session.
-- `POST /session/end` - mark session ended and write a heuristic memory snapshot.
-- `GET /project/latest_snapshot?root_path=...` - fetch the most recent snapshot for a project.
-- `GET /health` - readiness probe.
+
+### What to Expect
+- Each request logs to stdout (session start/end, event batches, Supabase errors).
+- After `/session/start`, you should see new rows in `projects` and `sessions`.
+- After sending `/events` and `/session/end`, you should see rows in `events` and `memory_snapshots`.
 
 ## VS Code Extension
-### Install dependencies
+### Install & Build
 ```bash
 cd vscode-extension
 npm install
+npm run compile
 ```
 
-### Build and Debug
-1. Run `npm run compile` (or `npm run watch`).
-2. Open the `vscode-extension` folder in VS Code.
-3. Press `F5` to launch an Extension Development Host.
+### Debug Workflow
+1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
+2. In the dev host, open the Threads repo workspace.
+3. Confirm the status bar shows `Threads` (clicking opens the latest snapshot).
+4. Make edits, change active files, and start/stop the debugger to queue events.
+5. Use **Threads: Save State Now** to end the current session and start a new one.
+6. Use **Threads: Show Last State** to open the webview with the most recent snapshot (copy the summary to clipboard from the panel).
 
-### Behavior
-- On activation, the extension detects the workspace root and calls `POST /session/start` on the backend.
-- Captures events (save, active editor changes, debug start/stop) and batches them to `POST /events` every 5 seconds.
-- On shutdown or the `Threads: Save State Now` command, pending events are flushed and `POST /session/end` is called.
-- `Threads: Show Last State` opens a webview that renders the most recent snapshot from `GET /project/latest_snapshot`.
+Backend logs should show `/session/start`, `/events`, `/session/end`, and `/project/latest_snapshot` calls. Supabase tables should update accordingly.
 
-## Example Workflow
-1. Start the backend: `uvicorn backend.main:app --reload`.
-2. Open a project in VS Code and run the extension in debug mode.
-3. Work normally; events are captured and persisted in Supabase.
-4. Run `Threads: Show Last State` to view the current memory snapshot at any time.
+## Testing & Verification Guide
+- **Backend only:**
+  1. Start Uvicorn as above.
+  2. Hit `/health` and `/session/start` with `curl`.
+  3. Post an events batch:
+     ```bash
+     curl -X POST http://localhost:8000/events \
+       -H "Content-Type: application/json" \
+       -d '{"session_id":"<id from start>","events":[{"event_type":"file_edit","data":{"filePath":"/tmp/demo.py"}}]}'
+     ```
+  4. End the session:
+     ```bash
+     curl -X POST http://localhost:8000/session/end \
+       -H "Content-Type: application/json" \
+       -d '{"session_id":"<id>"}'
+     ```
+  5. Check Supabase Dashboard tables (`projects`, `sessions`, `events`, `memory_snapshots`) for new rows.
+- **Extension + backend:** follow the debug workflow above and watch backend logs for the incoming requests.
+
+## Troubleshooting
+- **TypeScript timer typing errors:** ensure `flushTimer` is typed as `NodeJS.Timeout | undefined` (see `src/extension.ts`).
+- **No requests hitting backend:** verify `threads.backendUrl` in VS Code settings and confirm `curl http://localhost:8000/health` succeeds.
+- **No Supabase writes:** confirm `.env` values are loaded; backend logs will print Supabase errors to the console.
+- **Webview not updating:** use **Threads: Save State Now** to flush events and create a snapshot, then re-open **Threads: Show Last State**.
+
+## Notes
+- Secrets stay in your local `.env`; none are committed.
+- Memory snapshots are heuristic (no LLM calls) so they remain fast and predictable.
