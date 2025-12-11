@@ -59,28 +59,18 @@ def start_session(payload: SessionStartRequest):
         "updated_at": _now().isoformat(),
     }
 
-    project_response = (
-        supabase.table("projects")
-        .upsert(project_data, on_conflict="root_path")
-        .select("id, root_path")
-        .execute()
-    )
+    project_response = supabase.table("projects").upsert(project_data, on_conflict="root_path").execute()
     if getattr(project_response, "error", None):
         logger.error("Supabase error upserting project: %s", project_response.error)
         raise HTTPException(status_code=500, detail="Unable to upsert project")
 
-    project_rows = project_response.data or []
-    if not project_rows:
+    project = _get_project_by_root(payload.root_path)
+    if not project:
         raise HTTPException(status_code=500, detail="Unable to upsert project")
 
-    project_id = project_rows[0]["id"]
+    project_id = project["id"]
 
-    session_response = (
-        supabase.table("sessions")
-        .insert({"project_id": project_id, "started_at": _now().isoformat()})
-        .select("id, project_id, started_at")
-        .execute()
-    )
+    session_response = supabase.table("sessions").insert({"project_id": project_id, "started_at": _now().isoformat()}).execute()
     if getattr(session_response, "error", None):
         logger.error("Supabase error creating session: %s", session_response.error)
         raise HTTPException(status_code=500, detail="Unable to start session")
@@ -125,18 +115,18 @@ def record_events(payload: EventsBatchRequest):
 def end_session(payload: SessionEndRequest):
     session_id = payload.session_id
 
-    update_response = (
-        supabase.table("sessions")
-        .update({"ended_at": _now().isoformat(), "summary_generated": True})
-        .eq("id", session_id)
-        .select("*")
-        .execute()
-    )
+    update_response = supabase.table("sessions").update({"ended_at": _now().isoformat(), "summary_generated": True}).eq("id", session_id).execute()
     if getattr(update_response, "error", None):
         logger.error("Supabase error ending session: %s", update_response.error)
         raise HTTPException(status_code=500, detail="Failed to end session")
 
-    session_rows = update_response.data or []
+    # Re-fetch the session to ensure we have the latest data with ended_at set.
+    session_lookup = supabase.table("sessions").select("*").eq("id", session_id).execute()
+    if getattr(session_lookup, "error", None):
+        logger.error("Supabase error fetching session after end: %s", session_lookup.error)
+        raise HTTPException(status_code=500, detail="Failed to fetch session")
+
+    session_rows = session_lookup.data or []
     if not session_rows:
         raise HTTPException(status_code=404, detail="Session not found")
 

@@ -1,0 +1,6 @@
+{
+  "threads.backendUrl": "http://localhost:8000",
+  "threads.eventFlushIntervalMs": 2000,
+  "files.autoSave": "off",
+  "editor.minimap.enabled": false
+}
