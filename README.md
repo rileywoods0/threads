@@ -37,10 +37,7 @@ If running from inside `backend/`, set `PYTHONPATH=..`.
 
 ### Quick Checks
 ```bash
-curl http://localhost:8000/health
-curl -X POST http://localhost:8000/session/start \
-  -H "Content-Type: application/json" \
-  -d '{"root_path":"/path/to/workspace","project_name":"threads"}'
+Invoke-RestMethod -Uri "http://localhost:8000/session/start" -Method POST -ContentType "application/json" -Body '{"root_path":"C:/Github/threads","project_name":"threads"}'
 ```
 
 ### What to Expect

@@ -1,6 +1,8 @@
 """Application configuration loaded from environment variables."""
 
-from pydantic import AliasChoices, Field
+import os
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,14 +11,14 @@ class Settings(BaseSettings):
 
     SUPABASE_URL: str = Field(
         "https://dffscxoafddkvrufdvyi.supabase.co",
-        validation_alias=AliasChoices("SUPABASE_URL"),
+        env="SUPABASE_URL",
     )
     SUPABASE_SERVICE_ROLE_KEY: str = Field(
         "",
-        validation_alias=AliasChoices("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_KEY"),
+        env="SUPABASE_SERVICE_ROLE_KEY",
     )
-    API_HOST: str = Field("0.0.0.0", validation_alias=AliasChoices("API_HOST"))
-    API_PORT: int = Field(8000, validation_alias=AliasChoices("API_PORT"))
+    API_HOST: str = Field("0.0.0.0", env="API_HOST")
+    API_PORT: int = Field(8000, env="API_PORT")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -24,6 +26,14 @@ class Settings(BaseSettings):
         populate_by_name=True,
         extra="ignore",
     )
+
+    @property
+    def supabase_secret(self) -> str:
+        """Prefer the explicit service-role key but allow alternate aliases."""
+        explicit = self.SUPABASE_SERVICE_ROLE_KEY
+        if explicit:
+            return explicit
+        return os.getenv("SUPABASE_KEY", "")
 
 
 settings = Settings()
