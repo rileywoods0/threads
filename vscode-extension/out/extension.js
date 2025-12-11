@@ -35,70 +35,105 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const panel_1 = require("./panel");
 let sessionId = null;
 let projectId = null;
-let eventQueue = [];
-let flushTimer = null;
-function backendUrl() {
+let pendingEvents = [];
+let flushTimer;
+let statusBarItem;
+function getConfig() {
     const config = vscode.workspace.getConfiguration('threads');
-    return config.get('backendUrl') || 'http://localhost:8000';
+    return {
+        backendUrl: config.get('backendUrl', 'http://localhost:8000'),
+        flushIntervalMs: config.get('eventFlushIntervalMs', 5000)
+    };
 }
-async function startSession(context) {
-    const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const projectName = vscode.workspace.workspaceFolders?.[0]?.name || 'Untitled Project';
-    if (!rootPath) {
-        vscode.window.showWarningMessage('Threads could not determine the workspace root.');
-        return;
+function ensureStatusBarItem(context) {
+    if (!statusBarItem) {
+        statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+        statusBarItem.text = '$(clock) Threads';
+        statusBarItem.tooltip = 'Threads is capturing session context.';
+        statusBarItem.command = 'threads.showLastState';
+        context.subscriptions.push(statusBarItem);
     }
-    try {
-        const response = await fetch(`${backendUrl()}/session/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ root_path: rootPath, project_name: projectName })
-        });
-        const payload = await response.json();
-        sessionId = payload.session_id;
-        projectId = payload.project_id;
-        context.workspaceState.update('threads.sessionId', sessionId);
-    }
-    catch (err) {
-        vscode.window.showErrorMessage(`Threads failed to start session: ${err}`);
-    }
+    statusBarItem.show();
 }
 function queueEvent(event_type, data) {
-    eventQueue.push({
+    pendingEvents.push({
         event_type,
         timestamp: new Date().toISOString(),
         data
     });
 }
-async function flushEvents() {
-    if (!sessionId || eventQueue.length === 0) {
+function startFlushTimer(intervalMs) {
+    if (flushTimer) {
+        clearInterval(flushTimer);
+    }
+    flushTimer = setInterval(() => {
+        void flushEvents();
+    }, intervalMs);
+}
+async function startSession(context) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        vscode.window.showWarningMessage('Threads: No workspace folder open.');
         return;
     }
-    const pending = [...eventQueue];
-    eventQueue = [];
+    const rootPath = workspaceFolder.uri.fsPath;
+    const projectName = path.basename(rootPath);
+    const { backendUrl } = getConfig();
     try {
-        await fetch(`${backendUrl()}/events`, {
+        const response = await fetch(`${backendUrl}/session/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: sessionId, events: pending })
+            body: JSON.stringify({ root_path: rootPath, project_name: projectName })
         });
+        if (!response.ok) {
+            throw new Error(`status ${response.status}`);
+        }
+        const payload = (await response.json());
+        sessionId = payload.session_id;
+        projectId = payload.project_id;
+        context.workspaceState.update('threads.sessionId', sessionId);
+        console.log(`Threads: Started session ${sessionId} for ${rootPath}`);
+        ensureStatusBarItem(context);
     }
     catch (err) {
-        vscode.window.showErrorMessage(`Threads failed to send events: ${err}`);
-        eventQueue.unshift(...pending);
+        console.error('Threads: Failed to start session', err);
+        vscode.window.showErrorMessage('Threads failed to start session. Check backend connectivity.');
+    }
+}
+async function flushEvents() {
+    if (!sessionId || pendingEvents.length === 0) {
+        return;
+    }
+    const { backendUrl } = getConfig();
+    const eventsToSend = [...pendingEvents];
+    pendingEvents = [];
+    try {
+        await fetch(`${backendUrl}/events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: sessionId, events: eventsToSend })
+        });
+        console.log(`Threads: Flushed ${eventsToSend.length} events.`);
+    }
+    catch (err) {
+        console.error('Threads: Failed to flush events', err);
+        vscode.window.showErrorMessage('Threads: Failed to send events to backend.');
+        pendingEvents.unshift(...eventsToSend);
     }
 }
 async function endSession(showNotification = false) {
     if (!sessionId) {
         return;
     }
+    const { backendUrl } = getConfig();
     await flushEvents();
     try {
-        await fetch(`${backendUrl()}/session/end`, {
+        await fetch(`${backendUrl}/session/end`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ session_id: sessionId })
@@ -108,48 +143,66 @@ async function endSession(showNotification = false) {
         }
     }
     catch (err) {
-        vscode.window.showErrorMessage(`Threads failed to end session: ${err}`);
+        console.error('Threads: Failed to end session', err);
+        vscode.window.showErrorMessage('Threads: Failed to end session.');
     }
     finally {
         sessionId = null;
     }
 }
 async function showLatestSnapshot() {
-    const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!rootPath) {
-        vscode.window.showWarningMessage('Threads could not determine the workspace root.');
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        vscode.window.showWarningMessage('Threads: No workspace folder open.');
         return;
     }
+    const rootPath = workspaceFolder.uri.fsPath;
+    const { backendUrl } = getConfig();
     try {
-        const response = await fetch(`${backendUrl()}/project/latest_snapshot?root_path=${encodeURIComponent(rootPath)}`);
+        const response = await fetch(`${backendUrl}/project/latest_snapshot?root_path=${encodeURIComponent(rootPath)}`);
+        if (response.status === 404) {
+            vscode.window.showInformationMessage('Threads: No snapshot available yet.');
+            return;
+        }
         if (!response.ok) {
             throw new Error(`status ${response.status}`);
         }
-        const payload = await response.json();
+        const payload = (await response.json());
         panel_1.ThreadsPanel.render(payload.snapshot);
     }
     catch (err) {
-        vscode.window.showErrorMessage(`Unable to load Threads snapshot: ${err}`);
+        console.error('Threads: Unable to load snapshot', err);
+        vscode.window.showErrorMessage('Threads: Unable to load latest snapshot.');
     }
 }
+async function saveStateNow(context) {
+    await endSession(true);
+    await startSession(context);
+    vscode.window.showInformationMessage('Threads: Session saved and a new one has started.');
+}
 function registerEventListeners(context) {
-    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((doc) => queueEvent('save', { filePath: doc.uri.fsPath })), vscode.window.onDidChangeActiveTextEditor((editor) => {
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((doc) => queueEvent('file_edit', { filePath: doc.uri.fsPath, languageId: doc.languageId })), vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor?.document) {
-            queueEvent('activeEditor', { filePath: editor.document.uri.fsPath });
+            queueEvent('file_focus', { filePath: editor.document.uri.fsPath, languageId: editor.document.languageId });
         }
-    }), vscode.debug.onDidStartDebugSession((debugSession) => queueEvent('debugStart', { name: debugSession.name })), vscode.debug.onDidTerminateDebugSession((debugSession) => queueEvent('debugStop', { name: debugSession.name })));
+    }), vscode.debug.onDidStartDebugSession((debugSession) => queueEvent('debug_start', { name: debugSession.name, type: debugSession.type })), vscode.debug.onDidTerminateDebugSession((debugSession) => queueEvent('debug_end', { name: debugSession.name, type: debugSession.type })));
 }
 async function activate(context) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        vscode.window.showWarningMessage('Threads: Open a workspace folder to enable session tracking.');
+        return;
+    }
     await startSession(context);
     registerEventListeners(context);
-    flushTimer = setInterval(() => {
-        flushEvents();
-    }, 5000);
+    const { flushIntervalMs } = getConfig();
+    startFlushTimer(flushIntervalMs);
     const showCommand = vscode.commands.registerCommand('threads.showLastState', showLatestSnapshot);
     const saveCommand = vscode.commands.registerCommand('threads.saveStateNow', async () => {
-        await endSession(true);
+        await saveStateNow(context);
     });
     context.subscriptions.push(showCommand, saveCommand);
+    ensureStatusBarItem(context);
 }
 async function deactivate() {
     if (flushTimer) {

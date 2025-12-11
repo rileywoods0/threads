@@ -35,6 +35,11 @@
           "type": "string",
           "default": "http://localhost:8000",
           "description": "Base URL for the Threads backend API"
+        },
+        "threads.eventFlushIntervalMs": {
+          "type": "number",
+          "default": 5000,
+          "description": "How often to flush queued events (milliseconds)."
         }
       }
     }

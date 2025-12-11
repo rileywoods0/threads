@@ -1,47 +1,50 @@
+"""Pydantic models for request and response payloads."""
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 
-class StartSessionRequest(BaseModel):
+class SessionStartRequest(BaseModel):
     root_path: str
-    project_name: str
+    project_name: Optional[str] = None
 
 
-class StartSessionResponse(BaseModel):
+class SessionStartResponse(BaseModel):
     session_id: str
     project_id: str
 
 
-class EventModel(BaseModel):
+class EventPayload(BaseModel):
     event_type: str
-    timestamp: datetime
+    timestamp: Optional[datetime] = None
     data: Dict[str, Any] = Field(default_factory=dict)
 
 
-class EventsRequest(BaseModel):
+class EventsBatchRequest(BaseModel):
     session_id: str
-    events: List[EventModel]
+    events: List[EventPayload]
 
 
-class EndSessionRequest(BaseModel):
+class SessionEndRequest(BaseModel):
     session_id: str
 
 
-class MemorySnapshot(BaseModel):
-    id: str
+class MemorySnapshotResponse(BaseModel):
+    id: Optional[str] = None
     project_id: str
     session_id: str
     created_at: datetime
     current_goal: Optional[str]
-    completed_work: Optional[Any]
-    open_issues: Optional[Any]
-    next_steps: Optional[Any]
-    decisions: Optional[Any]
+    completed_work: List[str]
+    open_issues: List[str]
+    next_steps: List[str]
+    decisions: List[str]
     summary_text: Optional[str]
 
 
 class LatestSnapshotResponse(BaseModel):
     project_id: str
-    snapshot: Optional[MemorySnapshot]
+    snapshot: Optional[MemorySnapshotResponse] = None
+    message: Optional[str] = None
