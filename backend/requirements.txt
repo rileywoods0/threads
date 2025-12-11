@@ -1,6 +1,7 @@
 fastapi==0.115.6
 uvicorn==0.32.1
-supabase==2.6.0
+supabase==2.25.1
+websockets>=13,<16
 pydantic>=2.10,<3.0
 pydantic-settings>=2.4.0,<3.0
 python-dotenv==1.0.1
