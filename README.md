@@ -3,8 +3,8 @@
 Threads is a lightweight developer memory prototype with a FastAPI backend backed by Supabase and a VS Code extension that captures local activity.
 
 ## Repository Layout
-- `backend/` – FastAPI app, Supabase client, memory heuristics, and SQL schema.
-- `vscode-extension/` – VS Code extension that captures editor events and renders the latest memory snapshot.
+- `backend/` - FastAPI app, Supabase client, memory heuristics, and SQL schema.
+- `vscode-extension/` - VS Code extension that captures editor events and renders the latest memory snapshot.
 
 ## Supabase Setup
 1. Create a Supabase project (or reuse the provided one).
@@ -49,11 +49,11 @@ curl -X POST http://localhost:8000/session/start -H "Content-Type: application/j
   -d "{\"root_path\":\"C:/Github/threads\",\"project_name\":\"threads\"}"
 ```
 Endpoints:
-- `POST /session/start` – upsert project by `root_path` and start a session.
-- `POST /events` – batch insert IDE events for a session.
-- `POST /session/end` – mark session ended and write a heuristic memory snapshot.
-- `GET /project/latest_snapshot?root_path=...` – fetch the most recent snapshot for a project.
-- `GET /health` – readiness probe.
+- `POST /session/start` - upsert project by `root_path` and start a session.
+- `POST /events` - batch insert IDE events for a session.
+- `POST /session/end` - mark session ended and write a heuristic memory snapshot.
+- `GET /project/latest_snapshot?root_path=...` - fetch the most recent snapshot for a project.
+- `GET /health` - readiness probe.
 
 ## VS Code Extension
 ### Install dependencies
