@@ -30,7 +30,11 @@ def _collect_files(events: List[Dict[str, Any]]) -> List[str]:
         data = _parse_event_data(event.get("data"))
         file_path = data.get("filePath") or data.get("file") or data.get("path")
         if file_path:
-            files.add(str(file_path))
+            file_str = str(file_path)
+            lowered = file_str.replace("\\", "/").lower()
+            if "/.threads/" in lowered or "/.git/" in lowered:
+                continue
+            files.add(file_str)
     return sorted(files)
 
 

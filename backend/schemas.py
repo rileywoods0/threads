@@ -31,6 +31,11 @@ class SessionEndRequest(BaseModel):
     session_id: str
 
 
+class SnapshotCreateRequest(BaseModel):
+    session_id: str
+    reason: Optional[str] = None
+
+
 class MemorySnapshotResponse(BaseModel):
     id: Optional[str] = None
     project_id: str

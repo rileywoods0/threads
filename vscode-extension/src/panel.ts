@@ -68,6 +68,10 @@ export class ThreadsPanel {
       if (message?.type === 'copySummary' && this.snapshot?.summary_text) {
         await vscode.env.clipboard.writeText(this.snapshot.summary_text);
         vscode.window.showInformationMessage('Threads summary copied to clipboard.');
+        return;
+      }
+      if (message?.type === 'resumeWorkspace') {
+        await vscode.commands.executeCommand('threads.resumeWhereILeftOff');
       }
     });
   }
@@ -82,11 +86,14 @@ export class ThreadsPanel {
             <h1>Last Session at a Glance</h1>
             <p class="muted">Instant context so you can pick up right where you left off.</p>
           </div>
-          ${
-            snapshot.summary_text
-              ? '<button id="copySummary" class="ghost">Copy summary</button>'
-              : ''
-          }
+          <div class="actions">
+            <button id="resumeWorkspace" class="primary">Resume workspace</button>
+            ${
+              snapshot.summary_text
+                ? '<button id="copySummary" class="ghost">Copy summary</button>'
+                : ''
+            }
+          </div>
         </header>
 
         <div class="grid">
@@ -197,6 +204,17 @@ export class ThreadsPanel {
             transition: all 0.15s ease;
           }
           .ghost:hover { background: rgba(95, 209, 185, 0.12); }
+          .actions { display: flex; gap: 0.5rem; align-items: center; }
+          .primary {
+            background: rgba(95, 209, 185, 0.18);
+            border: 1px solid rgba(95, 209, 185, 0.7);
+            color: var(--text);
+            padding: 0.45rem 0.8rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+          }
+          .primary:hover { background: rgba(95, 209, 185, 0.26); }
           .empty {
             text-align: center;
             padding: 2rem;
@@ -218,6 +236,12 @@ export class ThreadsPanel {
           if (copyButton) {
             copyButton.addEventListener('click', () => {
               vscodeApi.postMessage({ type: 'copySummary' });
+            });
+          }
+          const resumeButton = document.getElementById('resumeWorkspace');
+          if (resumeButton) {
+            resumeButton.addEventListener('click', () => {
+              vscodeApi.postMessage({ type: 'resumeWorkspace' });
             });
           }
         </script>

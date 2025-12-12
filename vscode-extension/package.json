@@ -15,6 +15,8 @@
     "onCommand:threads.checkBackend",
     "onCommand:threads.exportContextBundle",
     "onCommand:threads.resumeWhereILeftOff",
+    "onCommand:threads.statusMenu",
+    "onCommand:threads.diagnostics",
     "onView:threads.view"
   ],
   "main": "./out/extension.js",
@@ -55,6 +57,14 @@
       {
         "command": "threads.resumeWhereILeftOff",
         "title": "Threads: Resume Where I Left Off"
+      },
+      {
+        "command": "threads.statusMenu",
+        "title": "Threads: Menu"
+      },
+      {
+        "command": "threads.diagnostics",
+        "title": "Threads: Diagnostics"
       }
     ],
     "viewsContainers": {
@@ -98,6 +108,39 @@
           "type": "boolean",
           "default": true,
           "description": "Deprecated; use threads.resumeMode. If set, true behaves like 'prompt' and false like 'off'."
+        },
+        "threads.autoCheckpoint.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create non-disruptive checkpoints while you work."
+        },
+        "threads.autoCheckpoint.intervalMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "description": "Create a checkpoint if this many minutes have elapsed since the last checkpoint and enough activity has occurred."
+        },
+        "threads.autoCheckpoint.idleMinutes": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Create a checkpoint after this many minutes of inactivity (if enough activity occurred since the last checkpoint)."
+        },
+        "threads.autoCheckpoint.minEvents": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Minimum number of captured events since the last checkpoint to create a new one."
+        },
+        "threads.autoCheckpoint.onShutdown": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a final checkpoint when VS Code shuts down (if there is unsaved activity)."
+        },
+        "threads.autoCheckpoint.onBranchChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a checkpoint when the active git branch changes (if there is unsaved activity)."
         }
       }
     }

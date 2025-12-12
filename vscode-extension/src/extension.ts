@@ -30,6 +30,19 @@ let resumePromptShown = false;
 let stateFilePath: string | null = null;
 let touchedFiles = new Set<string>();
 let threadsViewProvider: ThreadsViewProvider | undefined;
+let selectionByFile = new Map<string, { line: number; character: number }>();
+let openFilesOrdered: string[] = [];
+let activeFilePath: string | null = null;
+let lastActivityAtMs = Date.now();
+let eventsSinceSnapshot = 0;
+let lastFlushAtMs: number | null = null;
+let lastSnapshotAtMs: number | null = null;
+let lastSnapshotId: string | null = null;
+let lastBackendError: string | null = null;
+let checkpointTimer: NodeJS.Timeout | undefined;
+let gitBranchName: string | null = null;
+let toastStampPath: string | null = null;
+let extensionContext: vscode.ExtensionContext | null = null;
 
 function getConfig() {
   const config = vscode.workspace.getConfiguration('threads');
@@ -39,7 +52,15 @@ function getConfig() {
   return {
     backendUrl: config.get<string>('backendUrl', 'http://localhost:8000'),
     flushIntervalMs: config.get<number>('eventFlushIntervalMs', 5000),
-    resumeMode
+    resumeMode,
+    autoCheckpoint: {
+      enabled: config.get<boolean>('autoCheckpoint.enabled', true),
+      intervalMinutes: config.get<number>('autoCheckpoint.intervalMinutes', 15),
+      idleMinutes: config.get<number>('autoCheckpoint.idleMinutes', 8),
+      minEvents: config.get<number>('autoCheckpoint.minEvents', 20),
+      onShutdown: config.get<boolean>('autoCheckpoint.onShutdown', true),
+      onBranchChange: config.get<boolean>('autoCheckpoint.onBranchChange', true)
+    }
   };
 }
 
@@ -56,6 +77,7 @@ function logInfo(message: string) {
 }
 
 function logError(message: string, err?: unknown) {
+  lastBackendError = `${message}${err ? `: ${String(err)}` : ''}`;
   getOutputChannel().appendLine(`${message}${err ? `: ${String(err)}` : ''}`);
   console.error(message, err);
 }
@@ -63,9 +85,9 @@ function logError(message: string, err?: unknown) {
 function ensureStatusBarItem(context: vscode.ExtensionContext) {
   if (!statusBarItem) {
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    statusBarItem.text = '$(clock) Threads';
+    statusBarItem.text = 'Threads: In session';
     statusBarItem.tooltip = 'Threads is capturing session context.';
-    statusBarItem.command = 'threads.resumeWhereILeftOff';
+    statusBarItem.command = 'threads.statusMenu';
     context.subscriptions.push(statusBarItem);
   }
   statusBarItem.show();
@@ -96,6 +118,8 @@ function queueEvent(event_type: string, data: Record<string, unknown>) {
     }
   }
 
+  lastActivityAtMs = Date.now();
+  eventsSinceSnapshot += 1;
   pendingEvents.push({
     event_type,
     timestamp: new Date().toISOString(),
@@ -134,7 +158,15 @@ async function startSession(context: vscode.ExtensionContext) {
   workspaceRoot = rootPath;
   summaryFilePath = path.join(rootPath, '.threads', 'last-session.md');
   stateFilePath = path.join(rootPath, '.threads', 'last-session-state.json');
+  toastStampPath = path.join(rootPath, '.threads', 'toast-stamps.json');
   touchedFiles = new Set<string>();
+  selectionByFile = new Map<string, { line: number; character: number }>();
+  openFilesOrdered = [];
+  activeFilePath = null;
+  lastActivityAtMs = Date.now();
+  eventsSinceSnapshot = 0;
+  lastSnapshotAtMs = Date.now();
+  lastSnapshotId = null;
   const projectName = path.basename(rootPath);
   const { backendUrl } = getConfig();
 
@@ -172,6 +204,7 @@ async function flushEvents() {
       body: JSON.stringify({ session_id: sessionId, events: eventsToSend })
     });
     logInfo(`Threads: Flushed ${eventsToSend.length} events.`);
+    lastFlushAtMs = Date.now();
   } catch (err) {
     logError('Threads: Failed to flush events', err);
     vscode.window.showErrorMessage('Threads: Failed to send events to backend.');
@@ -179,7 +212,7 @@ async function flushEvents() {
   }
 }
 
-async function endSession(showNotification = false): Promise<ThreadsSnapshot | null> {
+async function endSession(showNotification = false, showPanel = true): Promise<ThreadsSnapshot | null> {
   if (!sessionId) {
     return null;
   }
@@ -199,18 +232,62 @@ async function endSession(showNotification = false): Promise<ThreadsSnapshot | n
     await persistLastSessionState(snapshot);
     threadsViewProvider?.refresh();
     await refreshMomentumUI();
-    ThreadsPanel.render(snapshot);
+    if (showPanel) {
+      ThreadsPanel.render(snapshot);
+    }
 
     if (showNotification) {
       vscode.window.showInformationMessage('Threads saved your session snapshot.');
     }
 
     sessionId = null;
+    eventsSinceSnapshot = 0;
+    lastSnapshotAtMs = Date.now();
+    lastSnapshotId = getSnapshotId(snapshot);
     return snapshot;
   } catch (err) {
     logError('Threads: Failed to end session', err);
     vscode.window.showErrorMessage('Threads: Failed to end session. Check backend logs for details.');
     return null;
+  }
+}
+
+async function createCheckpoint(reason: string, options?: { force?: boolean }) {
+  const { backendUrl, autoCheckpoint } = getConfig();
+  if (!autoCheckpoint.enabled) {
+    return;
+  }
+  if (!sessionId) {
+    return;
+  }
+
+  const force = options?.force ?? false;
+  if (!force && eventsSinceSnapshot < autoCheckpoint.minEvents) {
+    return;
+  }
+
+  logInfo(`Threads: Auto-checkpoint triggered (${reason}) eventsSinceSnapshot=${eventsSinceSnapshot}`);
+  await flushEvents();
+
+  try {
+    const snapshot = await fetchJson<ThreadsSnapshot>(`${backendUrl}/snapshot/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, reason })
+    });
+
+    await persistLatestSnapshotMarkdown(snapshot);
+    await persistSnapshotArchiveMarkdown(snapshot);
+    await persistLastSessionState(snapshot);
+    threadsViewProvider?.refresh();
+    eventsSinceSnapshot = 0;
+    lastSnapshotAtMs = Date.now();
+    lastSnapshotId = getSnapshotId(snapshot);
+    await refreshMomentumUI();
+    await maybeToastOncePerDay('Threads saved a checkpoint automatically.');
+    await pulseStatusBar('Threads: checkpoint saved');
+  } catch (err) {
+    logError('Threads: Auto-checkpoint failed', err);
   }
 }
 
@@ -253,7 +330,7 @@ async function showLatestSnapshot() {
 }
 
 async function saveStateNow(context: vscode.ExtensionContext) {
-  const snapshot = await endSession(true);
+  const snapshot = await endSession(true, true);
   if (!snapshot) {
     const choice = await vscode.window.showErrorMessage(
       'Threads: Failed to save this session.',
@@ -280,6 +357,9 @@ type LastSessionState = {
   currentGoal?: string;
   nextSteps?: string[];
   files: string[];
+  openFiles?: string[];
+  activeFile?: string;
+  cursors?: Record<string, { line: number; character: number }>;
 };
 
 function formatSnapshotMarkdown(snapshot: ThreadsSnapshot): string {
@@ -342,12 +422,23 @@ async function persistLastSessionState(snapshot: ThreadsSnapshot) {
   const combined = [...new Set([...touchedFiles, ...filesFromEditors])].filter((file) => !shouldIgnoreFile(file));
   const snapshotId = getSnapshotId(snapshot) ?? undefined;
 
+  const openFiles = openFilesOrdered.filter((f) => !shouldIgnoreFile(f));
+  const cursors: Record<string, { line: number; character: number }> = {};
+  for (const [file, pos] of selectionByFile.entries()) {
+    if (!shouldIgnoreFile(file)) {
+      cursors[file] = pos;
+    }
+  }
+
   const state: LastSessionState = {
     savedAt: new Date().toISOString(),
     snapshotId,
     currentGoal: snapshot.current_goal ?? undefined,
     nextSteps: snapshot.next_steps ?? undefined,
-    files: combined.slice(0, 50)
+    files: combined.slice(0, 50),
+    openFiles: openFiles.slice(0, 25),
+    activeFile: activeFilePath ?? undefined,
+    cursors
   };
 
   try {
@@ -690,13 +781,24 @@ async function refreshMomentumUI() {
   const goal = (state?.currentGoal || '').trim();
   const nextStep = (state?.nextSteps?.[0] || '').trim();
 
-  statusBarItem.text = fileCount ? '$(clock) Threads • Resume' : '$(clock) Threads';
+  if (!lastSnapshotAtMs && state?.savedAt) {
+    const ts = Date.parse(state.savedAt);
+    if (!Number.isNaN(ts)) {
+      lastSnapshotAtMs = ts;
+    }
+  }
+  const last = lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleTimeString() : null;
+  statusBarItem.text = 'Threads: In session';
   const tip = nextStep ? `Next: ${nextStep}` : '';
   statusBarItem.tooltip = goal
     ? `Resume: ${goal}${fileCount ? ` (${fileCount} files)` : ''}${tip ? `\n${tip}` : ''}`
     : fileCount
       ? `Resume available (${fileCount} files)${tip ? `\n${tip}` : ''}`
       : 'Threads is capturing session context.';
+
+  if (last) {
+    statusBarItem.tooltip += `\nLast checkpoint: ${last}`;
+  }
 }
 
 async function resumeWhereILeftOff() {
@@ -739,14 +841,14 @@ async function resumeWhereILeftOff() {
     return;
   }
 
-  const files = state?.files ?? [];
-  if (!files.length) {
+  const openFiles = state?.openFiles?.length ? state.openFiles : state?.files ?? [];
+  if (!openFiles.length) {
     vscode.window.showInformationMessage('Threads: No recent files recorded yet. Save a session first.');
     return;
   }
 
   const existing: string[] = [];
-  for (const file of files) {
+  for (const file of openFiles) {
     try {
       await fs.access(file);
       existing.push(file);
@@ -760,11 +862,11 @@ async function resumeWhereILeftOff() {
     return;
   }
 
-  const openAll = existing.length <= 6;
+  const openAll = existing.length <= 8;
   const confirm = openAll
     ? 'Open'
     : await vscode.window.showInformationMessage(
-        `Open the last ${Math.min(6, existing.length)} files?`,
+        `Open the last ${Math.min(8, existing.length)} files?`,
         'Open',
         'Choose files'
       );
@@ -772,7 +874,7 @@ async function resumeWhereILeftOff() {
     return;
   }
 
-  let toOpen = existing.slice(0, 6);
+  let toOpen = existing.slice(0, 8);
   if (confirm === 'Choose files') {
     const picked = await vscode.window.showQuickPick(
       existing.map((file) => ({ label: path.basename(file), description: file, file })),
@@ -788,7 +890,195 @@ async function resumeWhereILeftOff() {
     const file = toOpen[index];
     const doc = await vscode.workspace.openTextDocument(file);
     await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: index !== 0 });
+    const cursor = state?.cursors?.[file];
+    if (cursor) {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.uri.fsPath === file) {
+        const pos = new vscode.Position(cursor.line, cursor.character);
+        editor.selection = new vscode.Selection(pos, pos);
+        editor.revealRange(new vscode.Range(pos, pos));
+      }
+    }
   }
+
+  if (state?.activeFile) {
+    const active = state.activeFile;
+    if (existing.includes(active)) {
+      const doc = await vscode.workspace.openTextDocument(active);
+      await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+    }
+  }
+}
+
+async function showStatusMenu() {
+  const state = await readLastSessionState();
+  const filesTouched = state?.files?.length ?? 0;
+  const last = lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleTimeString() : null;
+  const subtitle = `${filesTouched} files touched${last ? ` • last checkpoint ${last}` : ''}`;
+
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: 'Resume Workspace', description: subtitle, action: 'resume' },
+      { label: 'Show Last Session', description: 'Open snapshot panel', action: 'show' },
+      { label: 'Save State Now', description: 'Ends session + starts new', action: 'save' },
+      { label: 'Browse Snapshots', description: 'Open history', action: 'browse' },
+      { label: 'Export Context Bundle', description: 'File / clipboard / agent prompt', action: 'export' },
+      { label: 'Diagnostics', description: 'Show runtime state', action: 'diag' },
+      { label: 'Show Output Log', description: 'Threads output channel', action: 'out' }
+    ],
+    { title: 'Threads', placeHolder: 'Choose an action' }
+  );
+  if (!pick) {
+    return;
+  }
+  if (pick.action === 'resume') {
+    await resumeWhereILeftOff();
+  } else if (pick.action === 'show') {
+    await showLatestSnapshot();
+  } else if (pick.action === 'save') {
+    if (extensionContext) {
+      await saveStateNow(extensionContext);
+    } else {
+      vscode.window.showErrorMessage('Threads: Extension context not ready.');
+    }
+  } else if (pick.action === 'browse') {
+    await browseSnapshots();
+  } else if (pick.action === 'export') {
+    await exportContextBundle();
+  } else if (pick.action === 'diag') {
+    await showDiagnostics();
+  } else if (pick.action === 'out') {
+    getOutputChannel().show(true);
+  }
+}
+
+async function showDiagnostics() {
+  const { backendUrl, autoCheckpoint } = getConfig();
+  const lines: string[] = [];
+  lines.push('# Threads Diagnostics');
+  lines.push('');
+  lines.push(`Backend URL: \`${backendUrl}\``);
+  lines.push(`Session ID: \`${sessionId ?? '(none)'}\``);
+  lines.push(`Pending events: \`${pendingEvents.length}\``);
+  lines.push(`Events since checkpoint: \`${eventsSinceSnapshot}\``);
+  lines.push(`Last activity: \`${new Date(lastActivityAtMs).toLocaleString()}\``);
+  lines.push(`Last flush: \`${lastFlushAtMs ? new Date(lastFlushAtMs).toLocaleString() : '(none)'}\``);
+  lines.push(`Last snapshot time: \`${lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleString() : '(none)'}\``);
+  lines.push(`Last snapshot id: \`${lastSnapshotId ?? '(none)'}\``);
+  lines.push(`Last backend error: \`${lastBackendError ?? '(none)'}\``);
+  lines.push('');
+  lines.push('## Auto-checkpoint settings');
+  lines.push('```json');
+  lines.push(JSON.stringify(autoCheckpoint, null, 2));
+  lines.push('```');
+
+  const doc = await vscode.workspace.openTextDocument({
+    language: 'markdown',
+    content: lines.join('\n')
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function pulseStatusBar(message: string) {
+  if (!statusBarItem) {
+    return;
+  }
+  const originalText = statusBarItem.text;
+  statusBarItem.text = message;
+  setTimeout(() => {
+    if (statusBarItem) {
+      statusBarItem.text = originalText;
+    }
+  }, 2500);
+}
+
+async function maybeToastOncePerDay(message: string) {
+  if (!toastStampPath) {
+    return;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    let stamps: Record<string, string> = {};
+    try {
+      stamps = JSON.parse(await fs.readFile(toastStampPath, 'utf8')) as Record<string, string>;
+    } catch {
+      stamps = {};
+    }
+    const lastShown = stamps['autoCheckpointToast'];
+    if (lastShown === today) {
+      return;
+    }
+    stamps['autoCheckpointToast'] = today;
+    await fs.mkdir(path.dirname(toastStampPath), { recursive: true });
+    await fs.writeFile(toastStampPath, JSON.stringify(stamps, null, 2), 'utf8');
+    void vscode.window.showInformationMessage(message);
+  } catch (err) {
+    logError('Threads: Failed to persist toast stamp', err);
+  }
+}
+
+function startCheckpointTimer() {
+  const { autoCheckpoint } = getConfig();
+  if (!autoCheckpoint.enabled) {
+    return;
+  }
+  if (checkpointTimer) {
+    clearInterval(checkpointTimer);
+  }
+  checkpointTimer = setInterval(() => {
+    void checkpointTick();
+  }, 60_000);
+}
+
+async function checkpointTick() {
+  const { autoCheckpoint } = getConfig();
+  if (!autoCheckpoint.enabled || !sessionId) {
+    return;
+  }
+  const now = Date.now();
+  const intervalMs = autoCheckpoint.intervalMinutes * 60_000;
+  const idleMs = autoCheckpoint.idleMinutes * 60_000;
+
+  if (intervalMs > 0 && lastSnapshotAtMs && now - lastSnapshotAtMs >= intervalMs) {
+    await createCheckpoint('interval');
+    return;
+  }
+
+  if (idleMs > 0 && now - lastActivityAtMs >= idleMs) {
+    await createCheckpoint('idle');
+  }
+}
+
+async function tryWireGitBranchDetection() {
+  const { autoCheckpoint } = getConfig();
+  if (!autoCheckpoint.onBranchChange) {
+    return;
+  }
+
+  const gitExtension = vscode.extensions.getExtension('vscode.git');
+  const anyExports = gitExtension?.exports as { getAPI?: (version: number) => any } | undefined;
+  if (!anyExports?.getAPI) {
+    return;
+  }
+  const api = anyExports.getAPI(1);
+  const repo = api?.repositories?.[0];
+  if (!repo?.state) {
+    return;
+  }
+
+  const getBranch = () => (repo.state.HEAD?.name as string | undefined) ?? null;
+  gitBranchName = getBranch();
+
+  repo.state.onDidChange(() => {
+    const next = getBranch();
+    if (next && next !== gitBranchName) {
+      const prev = gitBranchName;
+      gitBranchName = next;
+      if (eventsSinceSnapshot > 0) {
+        void createCheckpoint(`branch_change:${prev ?? 'unknown'}->${next}`, { force: true });
+      }
+    }
+  });
 }
 
 function registerEventListeners(context: vscode.ExtensionContext) {
@@ -810,8 +1100,27 @@ function registerEventListeners(context: vscode.ExtensionContext) {
         if (shouldIgnoreFile(editor.document.uri.fsPath)) {
           return;
         }
-        queueEvent('file_focus', { filePath: editor.document.uri.fsPath, languageId: editor.document.languageId });
+        const filePath = editor.document.uri.fsPath;
+        activeFilePath = filePath;
+        if (!openFilesOrdered.includes(filePath)) {
+          openFilesOrdered.push(filePath);
+        }
+        queueEvent('file_focus', { filePath, languageId: editor.document.languageId });
       }
+    }),
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      if (e.textEditor.document.uri.scheme !== 'file') {
+        return;
+      }
+      const filePath = e.textEditor.document.uri.fsPath;
+      if (shouldIgnoreFile(filePath)) {
+        return;
+      }
+      const pos = e.selections?.[0]?.active;
+      if (!pos) {
+        return;
+      }
+      selectionByFile.set(filePath, { line: pos.line, character: pos.character });
     }),
     vscode.debug.onDidStartDebugSession((debugSession) =>
       queueEvent('debug_start', { name: debugSession.name, type: debugSession.type })
@@ -823,6 +1132,7 @@ function registerEventListeners(context: vscode.ExtensionContext) {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+  extensionContext = context;
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     vscode.window.showWarningMessage('Threads: Open a workspace folder to enable session tracking.');
@@ -837,6 +1147,8 @@ export async function activate(context: vscode.ExtensionContext) {
   await refreshMomentumUI();
   void maybeShowResumePrompt();
   registerEventListeners(context);
+  startCheckpointTimer();
+  void tryWireGitBranchDetection();
 
   const { flushIntervalMs } = getConfig();
   startFlushTimer(flushIntervalMs);
@@ -851,6 +1163,8 @@ export async function activate(context: vscode.ExtensionContext) {
   const showOutputCommand = vscode.commands.registerCommand('threads.showOutput', () => getOutputChannel().show(true));
   const exportBundleCommand = vscode.commands.registerCommand('threads.exportContextBundle', exportContextBundle);
   const resumeCommand = vscode.commands.registerCommand('threads.resumeWhereILeftOff', resumeWhereILeftOff);
+  const menuCommand = vscode.commands.registerCommand('threads.statusMenu', showStatusMenu);
+  const diagnosticsCommand = vscode.commands.registerCommand('threads.diagnostics', showDiagnostics);
 
   context.subscriptions.push(
     showCommand,
@@ -860,7 +1174,9 @@ export async function activate(context: vscode.ExtensionContext) {
     healthCommand,
     showOutputCommand,
     exportBundleCommand,
-    resumeCommand
+    resumeCommand,
+    menuCommand,
+    diagnosticsCommand
   );
   ensureStatusBarItem(context);
   logInfo(`Threads: Extension activated (projectId=${projectId ?? 'unknown'}).`);
@@ -870,5 +1186,14 @@ export async function deactivate() {
   if (flushTimer) {
     clearInterval(flushTimer);
   }
-  await endSession();
+  if (checkpointTimer) {
+    clearInterval(checkpointTimer);
+  }
+  const { autoCheckpoint } = getConfig();
+  if (autoCheckpoint.onShutdown && (pendingEvents.length > 0 || eventsSinceSnapshot > 0)) {
+    logInfo('Threads: Shutdown snapshot (ending session)');
+    await endSession(false, false);
+    return;
+  }
+  await endSession(false, false);
 }

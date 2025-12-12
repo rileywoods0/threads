@@ -18,6 +18,7 @@ from .schemas import (
     MemorySnapshotResponse,
     SnapshotListItem,
     SnapshotsListResponse,
+    SnapshotCreateRequest,
     SessionEndRequest,
     SessionStartRequest,
     SessionStartResponse,
@@ -207,6 +208,70 @@ def end_session(payload: SessionEndRequest):
     snapshot_id = snapshot_rows[0]["id"]
     logger.info("Ended session %s, created snapshot %s", session_id, snapshot_id)
 
+    return MemorySnapshotResponse(**_normalize_snapshot_row(snapshot_rows[0]))
+
+
+@app.post("/snapshot/create", response_model=MemorySnapshotResponse)
+def create_snapshot(payload: SnapshotCreateRequest):
+    session_id = payload.session_id
+
+    session_lookup = supabase.table("sessions").select("*").eq("id", session_id).execute()
+    if getattr(session_lookup, "error", None):
+        logger.error("Supabase error fetching session for checkpoint: %s", session_lookup.error)
+        raise HTTPException(status_code=500, detail="Failed to fetch session")
+    session_rows = session_lookup.data or []
+    if not session_rows:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = session_rows[0]
+
+    events_response = (
+        supabase.table("events")
+        .select("*")
+        .eq("session_id", session_id)
+        .order("timestamp", desc=True)
+        .limit(2000)
+        .execute()
+    )
+    if getattr(events_response, "error", None):
+        logger.error("Supabase error fetching events for checkpoint: %s", events_response.error)
+        raise HTTPException(status_code=500, detail="Failed to fetch events")
+    events = list(reversed(events_response.data or []))
+
+    last_snapshot_response = (
+        supabase.table("memory_snapshots")
+        .select("*")
+        .eq("project_id", session["project_id"])
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if getattr(last_snapshot_response, "error", None):
+        logger.error("Supabase error fetching last snapshot: %s", last_snapshot_response.error)
+    last_snapshot = (last_snapshot_response.data or [None])[0]
+
+    facts = extract_session_facts(session, events)
+    facts["checkpoint_reason"] = payload.reason
+    snapshot_content = generate_memory_snapshot(session, events, last_snapshot)
+    snapshot_content = maybe_rewrite_snapshot(snapshot_content, facts)
+
+    snapshot_record = {
+        **snapshot_content,
+        "project_id": session["project_id"],
+        "session_id": session_id,
+        "created_at": _now().isoformat(),
+    }
+
+    insert_response = supabase.table("memory_snapshots").insert(snapshot_record).execute()
+    if getattr(insert_response, "error", None):
+        logger.error("Supabase error inserting checkpoint snapshot: %s", insert_response.error)
+        raise HTTPException(status_code=500, detail="Failed to store memory snapshot")
+
+    snapshot_rows = insert_response.data or []
+    if not snapshot_rows:
+        raise HTTPException(status_code=500, detail="Failed to store memory snapshot")
+
+    snapshot_id = snapshot_rows[0]["id"]
+    logger.info("Checkpoint snapshot %s created for session %s (reason=%s)", snapshot_id, session_id, payload.reason)
     return MemorySnapshotResponse(**_normalize_snapshot_row(snapshot_rows[0]))
 
 

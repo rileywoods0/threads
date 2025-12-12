@@ -26,11 +26,24 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
     - Supabase gets new rows in `sessions` (ended_at set) and `memory_snapshots`.
     - `.threads/last-session.md` exists and contains goal + next steps.
     - `.threads/last-session-state.json` exists and includes a `files` array.
+    - Status bar tooltip shows “Last checkpoint: …”.
+
+## 3b) Auto-checkpoint (interval/idle)
+- Ensure `threads.autoCheckpoint.*` is enabled (testing workspace settings use short intervals).
+- Do some activity: switch files + save a few times (aim for `minEvents`).
+- Wait:
+  - **Idle trigger**: stop typing/changing editors for ~2 minutes.
+  - **Interval trigger**: keep working for ~3 minutes after last checkpoint.
+- Expected:
+  - No panel pops automatically.
+  - Status bar briefly shows “checkpoint saved”.
+  - Supabase gets a new row in `memory_snapshots` without ending the session.
 
 ## 4) Resume “where I left off”
 - Close the editors you had open (optional).
 - Run **Threads: Resume Where I Left Off**
   - Choose “Reopen files” and confirm it reopens the last touched files.
+  - Confirm cursor positions restore for reopened files (best effort).
 
 ## 5) History browsing
 - Run **Threads: Browse Snapshots**
@@ -44,7 +57,11 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
   - Choose **Copy for agent (Short)** → paste into a scratch file; confirm it’s compact.
   - Choose **Copy agent prompt (Opt-in)** → paste into an AI tool; confirm it includes instructions + context.
 
-## 7) Backend script smoke test (optional)
+## 7) Diagnostics
+- Run **Threads: Diagnostics**
+  - Confirm it shows: backendUrl, sessionId, pending events, last flush time, last snapshot time/id, last backend error.
+
+## 8) Backend script smoke test (optional)
 From repo root:
 ```powershell
 .\testing\scripts\backend-e2e.ps1 -BackendUrl "http://localhost:8000" -RootPath (Resolve-Path ".").Path
@@ -54,4 +71,3 @@ From repo root:
 - Check `Threads` Output channel (VS Code Output panel).
 - Check backend terminal logs for Supabase errors.
 - Confirm `threads.backendUrl` in `testing/.vscode/settings.json`.
-

@@ -1,6 +1,12 @@
 {
   "threads.backendUrl": "http://localhost:8000",
   "threads.eventFlushIntervalMs": 2000,
+  "threads.autoCheckpoint.enabled": true,
+  "threads.autoCheckpoint.intervalMinutes": 3,
+  "threads.autoCheckpoint.idleMinutes": 2,
+  "threads.autoCheckpoint.minEvents": 5,
+  "threads.autoCheckpoint.onShutdown": true,
+  "threads.autoCheckpoint.onBranchChange": true,
   "files.autoSave": "off",
   "editor.minimap.enabled": false
 }

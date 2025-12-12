@@ -55,7 +55,7 @@ npm run compile
 
 ### In-Editor UI
 - Open the **Threads** view in the Activity Bar to access common actions (resume, browse snapshots, open summary markdown, health check).
-- The status bar shows `Threads` while capturing; clicking it opens the latest snapshot panel.
+- The status bar shows `Threads: In session`; clicking it opens a quick action menu (resume, show last session, save state, browse snapshots, export bundle, diagnostics).
 - Use **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` for pasting into Copilot/Claude/ChatGPT on project reopen.
 - Use **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
 
