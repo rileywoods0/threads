@@ -1,5 +1,6 @@
 """FastAPI entrypoint for the Threads prototype."""
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -14,6 +15,8 @@ from .schemas import (
     EventsBatchRequest,
     LatestSnapshotResponse,
     MemorySnapshotResponse,
+    SnapshotListItem,
+    SnapshotsListResponse,
     SessionEndRequest,
     SessionStartRequest,
     SessionStartResponse,
@@ -44,6 +47,30 @@ def _get_project_by_root(root_path: str) -> Optional[Dict[str, Any]]:
         logger.error("Supabase error fetching project: %s", response.error)
     data = response.data or []
     return data[0] if data else None
+
+
+def _ensure_list(value: Any) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+            if isinstance(decoded, list):
+                return decoded
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _normalize_snapshot_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row)
+    row["completed_work"] = _ensure_list(row.get("completed_work"))
+    row["open_issues"] = _ensure_list(row.get("open_issues"))
+    row["next_steps"] = _ensure_list(row.get("next_steps"))
+    row["decisions"] = _ensure_list(row.get("decisions"))
+    return row
 
 
 @app.get("/health")
@@ -177,7 +204,7 @@ def end_session(payload: SessionEndRequest):
     snapshot_id = snapshot_rows[0]["id"]
     logger.info("Ended session %s, created snapshot %s", session_id, snapshot_id)
 
-    return MemorySnapshotResponse(**snapshot_rows[0])
+    return MemorySnapshotResponse(**_normalize_snapshot_row(snapshot_rows[0]))
 
 
 @app.get("/project/latest_snapshot", response_model=LatestSnapshotResponse)
@@ -207,7 +234,43 @@ def latest_snapshot(root_path: str):
             content=LatestSnapshotResponse(project_id=project["id"], snapshot=None, message="No snapshot yet").model_dump(),
         )
 
-    return LatestSnapshotResponse(project_id=project["id"], snapshot=MemorySnapshotResponse(**snapshot))
+    return LatestSnapshotResponse(project_id=project["id"], snapshot=MemorySnapshotResponse(**_normalize_snapshot_row(snapshot)))
+
+
+@app.get("/project/snapshots", response_model=SnapshotsListResponse)
+def list_project_snapshots(root_path: str, limit: int = 20):
+    project = _get_project_by_root(root_path)
+    if not project:
+        logger.warning("Project not found for root_path=%s", root_path)
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    safe_limit = max(1, min(limit, 100))
+    response = (
+        supabase.table("memory_snapshots")
+        .select("id, session_id, created_at, current_goal, summary_text")
+        .eq("project_id", project["id"])
+        .order("created_at", desc=True)
+        .limit(safe_limit)
+        .execute()
+    )
+    if getattr(response, "error", None):
+        logger.error("Supabase error fetching snapshots list: %s", response.error)
+        raise HTTPException(status_code=500, detail="Failed to fetch snapshots")
+
+    snapshots = [SnapshotListItem(**row) for row in (response.data or [])]
+    return SnapshotsListResponse(project_id=project["id"], snapshots=snapshots)
+
+
+@app.get("/snapshot/{snapshot_id}", response_model=MemorySnapshotResponse)
+def get_snapshot(snapshot_id: str):
+    response = supabase.table("memory_snapshots").select("*").eq("id", snapshot_id).limit(1).execute()
+    if getattr(response, "error", None):
+        logger.error("Supabase error fetching snapshot: %s", response.error)
+        raise HTTPException(status_code=500, detail="Failed to fetch snapshot")
+    rows = response.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return MemorySnapshotResponse(**_normalize_snapshot_row(rows[0]))
 
 
 if __name__ == "__main__":

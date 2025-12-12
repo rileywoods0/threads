@@ -48,3 +48,16 @@ class LatestSnapshotResponse(BaseModel):
     project_id: str
     snapshot: Optional[MemorySnapshotResponse] = None
     message: Optional[str] = None
+
+
+class SnapshotListItem(BaseModel):
+    id: str
+    session_id: str
+    created_at: datetime
+    current_goal: Optional[str] = None
+    summary_text: Optional[str] = None
+
+
+class SnapshotsListResponse(BaseModel):
+    project_id: str
+    snapshots: List[SnapshotListItem]

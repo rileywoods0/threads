@@ -10,7 +10,11 @@
     "onStartupFinished",
     "onCommand:threads.showLastState",
     "onCommand:threads.saveStateNow",
-    "onCommand:threads.openSummaryFile"
+    "onCommand:threads.openSummaryFile",
+    "onCommand:threads.browseSnapshots",
+    "onCommand:threads.checkBackend",
+    "onCommand:threads.exportContextBundle",
+    "onView:threads.view"
   ],
   "main": "./out/extension.js",
   "scripts": {
@@ -30,8 +34,41 @@
       {
         "command": "threads.openSummaryFile",
         "title": "Threads: Open Last Summary Markdown"
+      },
+      {
+        "command": "threads.browseSnapshots",
+        "title": "Threads: Browse Snapshots"
+      },
+      {
+        "command": "threads.checkBackend",
+        "title": "Threads: Check Backend Health"
+      },
+      {
+        "command": "threads.showOutput",
+        "title": "Threads: Show Output Log"
+      },
+      {
+        "command": "threads.exportContextBundle",
+        "title": "Threads: Export Context Bundle (Markdown)"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "threads",
+          "title": "Threads",
+          "icon": "media/threads.svg"
+        }
+      ]
+    },
+    "views": {
+      "threads": [
+        {
+          "id": "threads.view",
+          "name": "Threads"
+        }
+      ]
+    },
     "configuration": {
       "type": "object",
       "title": "Threads",
@@ -45,6 +82,11 @@
           "type": "number",
           "default": 5000,
           "description": "How often to flush queued events (milliseconds)."
+        },
+        "threads.resumePrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a resume prompt on workspace open when a snapshot exists."
         }
       }
     }
