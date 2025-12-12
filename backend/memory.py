@@ -44,6 +44,40 @@ def _event_summary(events: List[Dict[str, Any]]) -> str:
     return ", ".join(f"{key}: {value}" for key, value in types.items())
 
 
+def extract_session_facts(session: Dict[str, Any], events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract deterministic facts for summarization and optional LLM rewriting."""
+
+    files_touched = _collect_files(events)
+    event_counts: Dict[str, int] = {}
+    for event in events:
+        event_type = event.get("event_type") or "unknown"
+        event_counts[event_type] = event_counts.get(event_type, 0) + 1
+    used_debugger = any(evt.get("event_type") in {"debug_start", "debugStart"} for evt in events)
+
+    return {
+        "started_at": session.get("started_at"),
+        "ended_at": session.get("ended_at"),
+        "files_touched": files_touched,
+        "event_counts": event_counts,
+        "used_debugger": used_debugger,
+        "event_count_total": len(events),
+    }
+
+
+def _dedupe(items: List[str]) -> List[str]:
+    seen: Set[str] = set()
+    out: List[str] = []
+    for item in items:
+        normalized = item.strip()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def _build_summary_text(
     started_at: Optional[str], event_summary: str, files_touched: List[str]
 ) -> str:
@@ -64,9 +98,10 @@ def generate_memory_snapshot(
 ) -> Dict[str, Any]:
     """Generate a simple heuristic summary for a session."""
 
-    files_touched = _collect_files(events)
+    facts = extract_session_facts(session, events)
+    files_touched = facts["files_touched"]
     event_summary = _event_summary(events)
-    used_debugger = any(evt.get("event_type") in {"debug_start", "debugStart"} for evt in events)
+    used_debugger = facts["used_debugger"]
 
     completed_work: List[str] = []
     if files_touched:
@@ -104,7 +139,7 @@ def generate_memory_snapshot(
         "current_goal": current_goal,
         "completed_work": completed_work,
         "open_issues": open_issues or [],
-        "next_steps": next_steps,
+        "next_steps": _dedupe(next_steps),
         "decisions": decisions,
         "summary_text": summary_text,
     }

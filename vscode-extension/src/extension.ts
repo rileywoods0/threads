@@ -27,13 +27,19 @@ let statusBarItem: vscode.StatusBarItem | undefined;
 let summaryFilePath: string | null = null;
 let outputChannel: vscode.OutputChannel | undefined;
 let resumePromptShown = false;
+let stateFilePath: string | null = null;
+let touchedFiles = new Set<string>();
+let threadsViewProvider: ThreadsViewProvider | undefined;
 
 function getConfig() {
   const config = vscode.workspace.getConfiguration('threads');
+  const resumeModeFromSetting = config.get<string>('resumeMode');
+  const resumePrompt = config.get<boolean>('resumePrompt', true);
+  const resumeMode = resumeModeFromSetting ?? (resumePrompt ? 'prompt' : 'off');
   return {
     backendUrl: config.get<string>('backendUrl', 'http://localhost:8000'),
     flushIntervalMs: config.get<number>('eventFlushIntervalMs', 5000),
-    resumePrompt: config.get<boolean>('resumePrompt', true)
+    resumeMode
   };
 }
 
@@ -59,13 +65,37 @@ function ensureStatusBarItem(context: vscode.ExtensionContext) {
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.text = '$(clock) Threads';
     statusBarItem.tooltip = 'Threads is capturing session context.';
-    statusBarItem.command = 'threads.showLastState';
+    statusBarItem.command = 'threads.resumeWhereILeftOff';
     context.subscriptions.push(statusBarItem);
   }
   statusBarItem.show();
 }
 
+function normalizePath(filePath: string): string {
+  return filePath.replace(/\//g, path.sep);
+}
+
+function shouldIgnoreFile(filePath: string): boolean {
+  const normalized = normalizePath(filePath).toLowerCase();
+  const ignoredSegments = [
+    `${path.sep}.threads${path.sep}`,
+    `${path.sep}.git${path.sep}`,
+    `${path.sep}node_modules${path.sep}`,
+    `${path.sep}.venv${path.sep}`,
+    `${path.sep}backend${path.sep}.venv${path.sep}`,
+    `${path.sep}vscode-extension${path.sep}out${path.sep}`
+  ];
+  return ignoredSegments.some((seg) => normalized.includes(seg));
+}
+
 function queueEvent(event_type: string, data: Record<string, unknown>) {
+  const filePath = data.filePath;
+  if (typeof filePath === 'string' && !shouldIgnoreFile(filePath)) {
+    if (event_type === 'file_edit' || event_type === 'file_focus') {
+      touchedFiles.add(filePath);
+    }
+  }
+
   pendingEvents.push({
     event_type,
     timestamp: new Date().toISOString(),
@@ -103,6 +133,8 @@ async function startSession(context: vscode.ExtensionContext) {
 
   workspaceRoot = rootPath;
   summaryFilePath = path.join(rootPath, '.threads', 'last-session.md');
+  stateFilePath = path.join(rootPath, '.threads', 'last-session-state.json');
+  touchedFiles = new Set<string>();
   const projectName = path.basename(rootPath);
   const { backendUrl } = getConfig();
 
@@ -164,6 +196,9 @@ async function endSession(showNotification = false): Promise<ThreadsSnapshot | n
 
     await persistLatestSnapshotMarkdown(snapshot);
     await persistSnapshotArchiveMarkdown(snapshot);
+    await persistLastSessionState(snapshot);
+    threadsViewProvider?.refresh();
+    await refreshMomentumUI();
     ThreadsPanel.render(snapshot);
 
     if (showNotification) {
@@ -207,6 +242,9 @@ async function showLatestSnapshot() {
     }
     await persistLatestSnapshotMarkdown(snapshot);
     await persistSnapshotArchiveMarkdown(snapshot);
+    await persistLastSessionState(snapshot);
+    threadsViewProvider?.refresh();
+    await refreshMomentumUI();
     ThreadsPanel.render(snapshot);
   } catch (err) {
     logError('Threads: Unable to load snapshot', err);
@@ -235,6 +273,14 @@ async function saveStateNow(context: vscode.ExtensionContext) {
   await startSession(context);
   vscode.window.showInformationMessage('Threads: Session saved and a new one has started.');
 }
+
+type LastSessionState = {
+  savedAt: string;
+  snapshotId?: string;
+  currentGoal?: string;
+  nextSteps?: string[];
+  files: string[];
+};
 
 function formatSnapshotMarkdown(snapshot: ThreadsSnapshot): string {
   const lines: string[] = [];
@@ -271,6 +317,57 @@ function formatSnapshotMarkdown(snapshot: ThreadsSnapshot): string {
 function getSnapshotId(snapshot: ThreadsSnapshot): string | null {
   const anySnapshot = snapshot as unknown as { id?: unknown };
   return typeof anySnapshot.id === 'string' && anySnapshot.id.length ? anySnapshot.id : null;
+}
+
+async function listVisibleEditorFiles(): Promise<string[]> {
+  const files: string[] = [];
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (editor.document.uri.scheme !== 'file') {
+      continue;
+    }
+    const filePath = editor.document.uri.fsPath;
+    if (!shouldIgnoreFile(filePath)) {
+      files.push(filePath);
+    }
+  }
+  return files;
+}
+
+async function persistLastSessionState(snapshot: ThreadsSnapshot) {
+  if (!workspaceRoot || !stateFilePath) {
+    return;
+  }
+
+  const filesFromEditors = await listVisibleEditorFiles();
+  const combined = [...new Set([...touchedFiles, ...filesFromEditors])].filter((file) => !shouldIgnoreFile(file));
+  const snapshotId = getSnapshotId(snapshot) ?? undefined;
+
+  const state: LastSessionState = {
+    savedAt: new Date().toISOString(),
+    snapshotId,
+    currentGoal: snapshot.current_goal ?? undefined,
+    nextSteps: snapshot.next_steps ?? undefined,
+    files: combined.slice(0, 50)
+  };
+
+  try {
+    await fs.mkdir(path.dirname(stateFilePath), { recursive: true });
+    await fs.writeFile(stateFilePath, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    logError('Threads: Failed to write last-session state', err);
+  }
+}
+
+async function readLastSessionState(): Promise<LastSessionState | null> {
+  if (!stateFilePath) {
+    return null;
+  }
+  try {
+    const raw = await fs.readFile(stateFilePath, 'utf8');
+    return JSON.parse(raw) as LastSessionState;
+  } catch {
+    return null;
+  }
 }
 
 async function writeSnapshotMarkdown(targetPath: string, snapshot: ThreadsSnapshot) {
@@ -335,6 +432,48 @@ async function openOrCreateSummaryFile() {
   } catch (err) {
     logError('Threads: Unable to open summary file', err);
     vscode.window.showErrorMessage('Threads: Unable to open summary file.');
+  }
+}
+
+async function maybeShowResumePrompt() {
+  const { resumeMode } = getConfig();
+  if (resumeMode === 'off' || resumePromptShown) {
+    return;
+  }
+  resumePromptShown = true;
+
+  if (resumeMode === 'quiet') {
+    return;
+  }
+
+  const rootPath = getWorkspaceRoot();
+  if (!rootPath) {
+    return;
+  }
+
+  try {
+    const snapshot = await fetchLatestSnapshot(rootPath);
+    if (!snapshot) {
+      return;
+    }
+
+    const goal = (snapshot.current_goal || '').trim();
+    const message = goal ? `Resume: ${goal}` : 'Resume: open your last Threads snapshot';
+    const choice = await vscode.window.showInformationMessage(
+      message,
+      'Reopen Files',
+      'Open Snapshot',
+      'Open Summary Markdown'
+    );
+    if (choice === 'Reopen Files') {
+      await resumeWhereILeftOff();
+    } else if (choice === 'Open Snapshot') {
+      await showLatestSnapshot();
+    } else if (choice === 'Open Summary Markdown') {
+      await openOrCreateSummaryFile();
+    }
+  } catch (err) {
+    logError('Threads: Resume prompt failed', err);
   }
 }
 
@@ -450,88 +589,227 @@ async function exportContextBundle() {
     logError('Threads: Unable to fetch snapshot list for context bundle', err);
   }
 
-  const lines: string[] = [];
-  lines.push('# Threads – Context Bundle');
-  lines.push('');
-  lines.push(`Workspace: ${rootPath}`);
-  lines.push(`Generated: ${new Date().toISOString()}`);
-  lines.push('');
-  lines.push('## Recent Snapshots (history)');
+  const state = await readLastSessionState();
+  const files = state?.files ?? [];
+  const goal = (state?.currentGoal || '').trim();
+  const nextSteps = state?.nextSteps ?? [];
+
+  const shortForAgent: string[] = [];
+  shortForAgent.push('# Threads – Context (Short)');
+  shortForAgent.push('');
+  if (goal) {
+    shortForAgent.push(`Goal: ${goal}`);
+  }
+  if (files.length) {
+    shortForAgent.push(`Files: ${files.slice(0, 8).join(', ')}`);
+  }
+  if (nextSteps.length) {
+    shortForAgent.push('Next steps:');
+    for (const step of nextSteps.slice(0, 6)) {
+      shortForAgent.push(`- ${step}`);
+    }
+  }
+  shortForAgent.push('');
+  shortForAgent.push('Last session summary:');
+  shortForAgent.push((lastSessionMarkdown.match(/## Summary[\s\S]*$/)?.[0] ?? '').trim() || '(none)');
+
+  const fullMarkdown: string[] = [];
+  fullMarkdown.push('# Threads – Context Bundle');
+  fullMarkdown.push('');
+  fullMarkdown.push(`Workspace: ${rootPath}`);
+  fullMarkdown.push(`Generated: ${new Date().toISOString()}`);
+  fullMarkdown.push('');
+  fullMarkdown.push('## Recent Snapshots (history)');
   if (!snapshots.length) {
-    lines.push('- None found.');
+    fullMarkdown.push('- None found.');
   } else {
     for (const s of snapshots) {
       const when = new Date(s.created_at).toLocaleString();
       const hint = (s.current_goal || s.summary_text || '').toString().trim();
-      lines.push(`- ${when} — ${hint || s.id}`);
+      fullMarkdown.push(`- ${when} — ${hint || s.id}`);
     }
   }
-  lines.push('');
-  lines.push('## Last Session (full)');
-  lines.push(lastSessionMarkdown || '_No last-session markdown available yet._');
-  lines.push('');
-  lines.push(
+  fullMarkdown.push('');
+  fullMarkdown.push('## Last Session (full)');
+  fullMarkdown.push(lastSessionMarkdown || '_No last-session markdown available yet._');
+  fullMarkdown.push('');
+  fullMarkdown.push(
     '> Tip: paste this file into Copilot Chat / Claude / ChatGPT when returning to the project to restore context quickly.'
   );
 
+  const agentPrompt: string[] = [];
+  agentPrompt.push('You are a coding assistant helping me resume work.');
+  agentPrompt.push('Use only the context below. If anything is missing, ask concise clarifying questions.');
+  agentPrompt.push('Return: (1) a 1-sentence restatement of goal, (2) top 3 next steps, (3) risks/unknowns.');
+  agentPrompt.push('');
+  agentPrompt.push('---');
+  agentPrompt.push(shortForAgent.join('\n'));
+  agentPrompt.push('---');
+
+  const mode = await vscode.window.showQuickPick(
+    [
+      { label: 'Markdown file (Full)', description: 'Writes .threads/context-bundle.md and opens it', mode: 'file' },
+      { label: 'Copy for agent (Short)', description: 'Copies a compact context to clipboard', mode: 'short' },
+      { label: 'Copy agent prompt (Opt-in)', description: 'Copies a ready-to-paste prompt + context', mode: 'prompt' }
+    ],
+    { title: 'Threads: Export context bundle' }
+  );
+  if (!mode) {
+    return;
+  }
+
   try {
-    await fs.mkdir(path.dirname(bundlePath), { recursive: true });
-    await fs.writeFile(bundlePath, lines.join('\n'), 'utf8');
-    const doc = await vscode.workspace.openTextDocument(bundlePath);
-    await vscode.window.showTextDocument(doc, { preview: false });
-    vscode.window.showInformationMessage('Threads: Context bundle exported.');
+    if (mode.mode === 'file') {
+      await fs.mkdir(path.dirname(bundlePath), { recursive: true });
+      await fs.writeFile(bundlePath, fullMarkdown.join('\n'), 'utf8');
+      const doc = await vscode.workspace.openTextDocument(bundlePath);
+      await vscode.window.showTextDocument(doc, { preview: false });
+      vscode.window.showInformationMessage('Threads: Context bundle exported.');
+      return;
+    }
+    if (mode.mode === 'short') {
+      await vscode.env.clipboard.writeText(shortForAgent.join('\n'));
+      vscode.window.showInformationMessage('Threads: Context copied to clipboard.');
+      return;
+    }
+    await vscode.env.clipboard.writeText(agentPrompt.join('\n'));
+    vscode.window.showInformationMessage('Threads: Agent prompt copied to clipboard.');
   } catch (err) {
     logError('Threads: Failed to write context bundle markdown', err);
     vscode.window.showErrorMessage('Threads: Failed to export context bundle.');
   }
 }
 
-async function maybeShowResumePrompt() {
-  const { resumePrompt } = getConfig();
-  if (!resumePrompt || resumePromptShown) {
+async function refreshMomentumUI() {
+  if (!statusBarItem) {
     return;
   }
-  resumePromptShown = true;
 
+  const state = await readLastSessionState();
+  const fileCount = state?.files?.length ?? 0;
+  const goal = (state?.currentGoal || '').trim();
+  const nextStep = (state?.nextSteps?.[0] || '').trim();
+
+  statusBarItem.text = fileCount ? '$(clock) Threads • Resume' : '$(clock) Threads';
+  const tip = nextStep ? `Next: ${nextStep}` : '';
+  statusBarItem.tooltip = goal
+    ? `Resume: ${goal}${fileCount ? ` (${fileCount} files)` : ''}${tip ? `\n${tip}` : ''}`
+    : fileCount
+      ? `Resume available (${fileCount} files)${tip ? `\n${tip}` : ''}`
+      : 'Threads is capturing session context.';
+}
+
+async function resumeWhereILeftOff() {
   const rootPath = getWorkspaceRoot();
   if (!rootPath) {
+    vscode.window.showWarningMessage('Threads: No workspace folder open.');
     return;
   }
 
-  try {
-    const snapshot = await fetchLatestSnapshot(rootPath);
-    if (!snapshot) {
+  const state = await readLastSessionState();
+  const fileCount = state?.files?.length ?? 0;
+
+  const choice = await vscode.window.showQuickPick(
+    [
+      {
+        label: fileCount ? `Reopen files (${fileCount})` : 'Reopen files',
+        action: 'reopen'
+      },
+      { label: 'Open snapshot panel', action: 'panel' },
+      { label: 'Open last summary markdown', action: 'summary' },
+      { label: 'Export context bundle', action: 'bundle' }
+    ],
+    { title: 'Threads: Resume' }
+  );
+
+  if (!choice) {
+    return;
+  }
+
+  if (choice.action === 'panel') {
+    await showLatestSnapshot();
+    return;
+  }
+  if (choice.action === 'summary') {
+    await openOrCreateSummaryFile();
+    return;
+  }
+  if (choice.action === 'bundle') {
+    await exportContextBundle();
+    return;
+  }
+
+  const files = state?.files ?? [];
+  if (!files.length) {
+    vscode.window.showInformationMessage('Threads: No recent files recorded yet. Save a session first.');
+    return;
+  }
+
+  const existing: string[] = [];
+  for (const file of files) {
+    try {
+      await fs.access(file);
+      existing.push(file);
+    } catch {
+      // ignore missing file
+    }
+  }
+
+  if (!existing.length) {
+    vscode.window.showInformationMessage('Threads: Previously touched files are no longer present.');
+    return;
+  }
+
+  const openAll = existing.length <= 6;
+  const confirm = openAll
+    ? 'Open'
+    : await vscode.window.showInformationMessage(
+        `Open the last ${Math.min(6, existing.length)} files?`,
+        'Open',
+        'Choose files'
+      );
+  if (confirm !== 'Open' && confirm !== 'Choose files') {
+    return;
+  }
+
+  let toOpen = existing.slice(0, 6);
+  if (confirm === 'Choose files') {
+    const picked = await vscode.window.showQuickPick(
+      existing.map((file) => ({ label: path.basename(file), description: file, file })),
+      { canPickMany: true, title: 'Choose files to reopen' }
+    );
+    if (!picked || picked.length === 0) {
       return;
     }
+    toOpen = picked.map((p) => p.file);
+  }
 
-    const goal = (snapshot.current_goal || '').trim();
-    const message = goal ? `Resume: ${goal}` : 'Resume: open your last Threads snapshot';
-    const choice = await vscode.window.showInformationMessage(
-      message,
-      'Open Snapshot',
-      'Open Summary Markdown',
-      'Copy Summary'
-    );
-    if (choice === 'Open Snapshot') {
-      await showLatestSnapshot();
-    } else if (choice === 'Open Summary Markdown') {
-      await openOrCreateSummaryFile();
-    } else if (choice === 'Copy Summary' && snapshot.summary_text) {
-      await vscode.env.clipboard.writeText(snapshot.summary_text);
-      vscode.window.showInformationMessage('Threads summary copied to clipboard.');
-    }
-  } catch (err) {
-    logError('Threads: Resume prompt failed', err);
+  for (let index = 0; index < toOpen.length; index++) {
+    const file = toOpen[index];
+    const doc = await vscode.workspace.openTextDocument(file);
+    await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: index !== 0 });
   }
 }
 
 function registerEventListeners(context: vscode.ExtensionContext) {
   context.subscriptions.push(
-    vscode.workspace.onDidSaveTextDocument((doc) =>
-      queueEvent('file_edit', { filePath: doc.uri.fsPath, languageId: doc.languageId })
-    ),
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (doc.uri.scheme !== 'file') {
+        return;
+      }
+      if (shouldIgnoreFile(doc.uri.fsPath)) {
+        return;
+      }
+      queueEvent('file_edit', { filePath: doc.uri.fsPath, languageId: doc.languageId });
+    }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (editor?.document) {
+        if (editor.document.uri.scheme !== 'file') {
+          return;
+        }
+        if (shouldIgnoreFile(editor.document.uri.fsPath)) {
+          return;
+        }
         queueEvent('file_focus', { filePath: editor.document.uri.fsPath, languageId: editor.document.languageId });
       }
     }),
@@ -551,10 +829,12 @@ export async function activate(context: vscode.ExtensionContext) {
     return;
   }
 
-  const viewProvider = new ThreadsViewProvider();
-  vscode.window.registerTreeDataProvider('threads.view', viewProvider);
+  threadsViewProvider = new ThreadsViewProvider();
+  vscode.window.registerTreeDataProvider('threads.view', threadsViewProvider);
 
   await startSession(context);
+  ensureStatusBarItem(context);
+  await refreshMomentumUI();
   void maybeShowResumePrompt();
   registerEventListeners(context);
 
@@ -570,6 +850,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const healthCommand = vscode.commands.registerCommand('threads.checkBackend', checkBackendHealth);
   const showOutputCommand = vscode.commands.registerCommand('threads.showOutput', () => getOutputChannel().show(true));
   const exportBundleCommand = vscode.commands.registerCommand('threads.exportContextBundle', exportContextBundle);
+  const resumeCommand = vscode.commands.registerCommand('threads.resumeWhereILeftOff', resumeWhereILeftOff);
 
   context.subscriptions.push(
     showCommand,
@@ -578,7 +859,8 @@ export async function activate(context: vscode.ExtensionContext) {
     browseCommand,
     healthCommand,
     showOutputCommand,
-    exportBundleCommand
+    exportBundleCommand,
+    resumeCommand
   );
   ensureStatusBarItem(context);
   logInfo(`Threads: Extension activated (projectId=${projectId ?? 'unknown'}).`);

@@ -57,6 +57,7 @@ npm run compile
 - Open the **Threads** view in the Activity Bar to access common actions (resume, browse snapshots, open summary markdown, health check).
 - The status bar shows `Threads` while capturing; clicking it opens the latest snapshot panel.
 - Use **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` for pasting into Copilot/Claude/ChatGPT on project reopen.
+- Use **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
 
 ### Debug Workflow
 1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
@@ -87,6 +88,7 @@ Backend logs should show `/session/start`, `/events`, `/session/end`, and `/proj
      ```
   5. Check Supabase Dashboard tables (`projects`, `sessions`, `events`, `memory_snapshots`) for new rows.
 - **Extension + backend:** follow the debug workflow above and watch backend logs for the incoming requests.
+- **Testing workspace:** open `testing/` in the Extension Development Host and follow `testing/CHECKLIST.md` for a full end-to-end verification flow.
 
 ## Troubleshooting
 - **TypeScript timer typing errors:** ensure `flushTimer` is typed as `NodeJS.Timeout | undefined` (see `src/extension.ts`).

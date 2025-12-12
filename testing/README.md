@@ -17,6 +17,7 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 7. Use **Threads: Browse Snapshots** to view older snapshots from history.
 8. Watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 9. Optional: run **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` (great to paste into an AI assistant when you return later).
+10. Optional: run **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
 
 > Tip: run commands from the Command Palette, not the Debug Console, to avoid syntax errors.
 
@@ -26,7 +27,14 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 ```
 This will hit `/health` and `/session/start` with the current repo path.
 
+## Optional: backend end-to-end script
+```powershell
+.\scripts\backend-e2e.ps1 -BackendUrl "http://localhost:8000" -RootPath (Resolve-Path "..")
+```
+This runs: `/health` → `/session/start` → `/events` → `/session/end` → snapshot history endpoints.
+
 ## Notes
 - `.vscode/settings.json` here pins `threads.backendUrl` to `http://localhost:8000` and shortens the flush interval for faster feedback.
+- `threads.resumeMode` defaults to `quiet` (no popups) — use the Threads sidebar or status bar to resume.
 - The sample files in `src/` cover multiple languages to exercise event payloads.
 - The markdown summary lives at `.threads/last-session.md` after you save a session—perfect to hand to Copilot/Cursor/Claude as context when reopening the project.

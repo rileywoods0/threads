@@ -14,6 +14,7 @@
     "onCommand:threads.browseSnapshots",
     "onCommand:threads.checkBackend",
     "onCommand:threads.exportContextBundle",
+    "onCommand:threads.resumeWhereILeftOff",
     "onView:threads.view"
   ],
   "main": "./out/extension.js",
@@ -50,6 +51,10 @@
       {
         "command": "threads.exportContextBundle",
         "title": "Threads: Export Context Bundle (Markdown)"
+      },
+      {
+        "command": "threads.resumeWhereILeftOff",
+        "title": "Threads: Resume Where I Left Off"
       }
     ],
     "viewsContainers": {
@@ -83,10 +88,16 @@
           "default": 5000,
           "description": "How often to flush queued events (milliseconds)."
         },
+        "threads.resumeMode": {
+          "type": "string",
+          "enum": ["quiet", "prompt", "off"],
+          "default": "quiet",
+          "description": "Resume UX on workspace open (quiet shows indicators only; prompt shows a message)."
+        },
         "threads.resumePrompt": {
           "type": "boolean",
           "default": true,
-          "description": "Show a resume prompt on workspace open when a snapshot exists."
+          "description": "Deprecated; use threads.resumeMode. If set, true behaves like 'prompt' and false like 'off'."
         }
       }
     }

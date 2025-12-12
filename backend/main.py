@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import settings
-from .memory import generate_memory_snapshot
+from .llm import maybe_rewrite_snapshot
+from .memory import extract_session_facts, generate_memory_snapshot
 from .schemas import (
     EventsBatchRequest,
     LatestSnapshotResponse,
@@ -183,7 +184,9 @@ def end_session(payload: SessionEndRequest):
         logger.error("Supabase error fetching last snapshot: %s", last_snapshot_response.error)
     last_snapshot = (last_snapshot_response.data or [None])[0]
 
+    facts = extract_session_facts(session, events)
     snapshot_content = generate_memory_snapshot(session, events, last_snapshot)
+    snapshot_content = maybe_rewrite_snapshot(snapshot_content, facts)
 
     snapshot_record = {
         **snapshot_content,

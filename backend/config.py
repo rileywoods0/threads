@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     )
     API_HOST: str = Field("0.0.0.0", env="API_HOST")
     API_PORT: int = Field(8000, env="API_PORT")
+    THREADS_LLM_MODE: str = Field(
+        "off",
+        env="THREADS_LLM_MODE",
+        description="off | rewrite (safe rewrite using facts only)",
+    )
+    OPENAI_API_KEY: str = Field("", env="OPENAI_API_KEY")
+    OPENAI_MODEL: str = Field("gpt-4o-mini", env="OPENAI_MODEL")
+    OPENAI_TIMEOUT_S: int = Field(20, env="OPENAI_TIMEOUT_S")
 
     model_config = SettingsConfigDict(
         env_file=".env",
