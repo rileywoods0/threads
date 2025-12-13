@@ -1,6 +1,6 @@
 # Threads Extension Test Harness
 
-Use this folder as a throwaway workspace inside the VS Code Extension Development Host to verify that the Threads extension and backend talk to each other end‑to‑end.
+Use this folder as a throwaway workspace inside the VS Code Extension Development Host to verify that the Threads extension and backend talk to each other end-to-end.
 
 ## Prereqs
 - Backend running from repo root: `uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`
@@ -32,11 +32,11 @@ This will hit `/health` and `/session/start` with the current repo path.
 ```powershell
 .\scripts\backend-e2e.ps1 -BackendUrl "http://localhost:8000" -RootPath (Resolve-Path "..")
 ```
-This runs: `/health` → `/session/start` → `/events` → `/session/end` → snapshot history endpoints.
+This runs: `/health` -> `/session/start` -> `/events` -> `/session/end` -> snapshot history endpoints.
 
 ## Notes
 - `.vscode/settings.json` here pins `threads.backendUrl` to `http://localhost:8000` and shortens the flush interval for faster feedback.
-- `threads.resumeMode` defaults to `quiet` (no popups) — use the Threads sidebar or status bar to resume.
+- `threads.resumeMode` defaults to `quiet` (no popups) - use the Threads sidebar or status bar to resume.
 - `threads.autoCheckpoint.*` is set to short values in this workspace so you can verify interval/idle triggers quickly.
 - The sample files in `src/` cover multiple languages to exercise event payloads.
-- The markdown summary lives at `.threads/last-session.md` after you save a session—perfect to hand to Copilot/Cursor/Claude as context when reopening the project.
+- The markdown summary lives at `.threads/last-session.md` after you save a session - perfect to hand to Copilot/Cursor/Claude as context when reopening the project.

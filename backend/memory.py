@@ -53,9 +53,15 @@ def extract_session_facts(session: Dict[str, Any], events: List[Dict[str, Any]])
 
     files_touched = _collect_files(events)
     event_counts: Dict[str, int] = {}
+    branches_to: Set[str] = set()
     for event in events:
         event_type = event.get("event_type") or "unknown"
         event_counts[event_type] = event_counts.get(event_type, 0) + 1
+        if event_type == "branch_change":
+            data = _parse_event_data(event.get("data"))
+            to_branch = data.get("to") or data.get("branch") or data.get("name")
+            if isinstance(to_branch, str) and to_branch.strip():
+                branches_to.add(to_branch.strip())
     used_debugger = any(evt.get("event_type") in {"debug_start", "debugStart"} for evt in events)
 
     return {
@@ -64,6 +70,7 @@ def extract_session_facts(session: Dict[str, Any], events: List[Dict[str, Any]])
         "files_touched": files_touched,
         "event_counts": event_counts,
         "used_debugger": used_debugger,
+        "branches_to": sorted(branches_to),
         "event_count_total": len(events),
     }
 
@@ -95,6 +102,21 @@ def _build_summary_text(
     return "\n".join(lines)
 
 
+def _ensure_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+            if isinstance(decoded, list):
+                return [str(item) for item in decoded if str(item).strip()]
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
 def generate_memory_snapshot(
     session: Dict[str, Any],
     events: List[Dict[str, Any]],
@@ -106,18 +128,33 @@ def generate_memory_snapshot(
     files_touched = facts["files_touched"]
     event_summary = _event_summary(events)
     used_debugger = facts["used_debugger"]
+    event_counts = facts.get("event_counts") or {}
+    branches_to = facts.get("branches_to") or []
+
+    tasks_started = int(event_counts.get("task_start", 0) or 0)
+    branch_changes = int(event_counts.get("branch_change", 0) or 0)
+    friction_switching = int(event_counts.get("friction_switching", 0) or 0)
 
     completed_work: List[str] = []
     if files_touched:
         completed_work.append(f"Edited or reviewed {len(files_touched)} file(s): {', '.join(files_touched[:5])}.")
     if used_debugger:
         completed_work.append("Ran the debugger during this session.")
+    if tasks_started:
+        completed_work.append(f"Ran {tasks_started} task(s) (build/test/run).")
+    if branch_changes:
+        if branches_to:
+            completed_work.append(f"Switched git branches: {', '.join(branches_to[:3])}.")
+        else:
+            completed_work.append("Switched git branches.")
+    if friction_switching:
+        completed_work.append("Lots of context switching detected (rapid file switching with few edits).")
     if events and not completed_work:
         completed_work.append(f"Captured {len(events)} IDE events including {event_summary}.")
 
     current_goal = None
     if last_snapshot:
-        previous_steps = last_snapshot.get("next_steps") or []
+        previous_steps = _ensure_string_list(last_snapshot.get("next_steps"))
         if previous_steps:
             current_goal = f"Continue: {previous_steps[0]}"
     if not current_goal:
@@ -126,14 +163,14 @@ def generate_memory_snapshot(
         else:
             current_goal = "Ongoing development work."
 
-    open_issues: List[str] = last_snapshot.get("open_issues") if last_snapshot else []
+    open_issues: List[str] = _ensure_string_list(last_snapshot.get("open_issues")) if last_snapshot else []
 
     next_steps: List[str] = []
     if files_touched:
         next_steps.append("Keep iterating on recently touched files.")
     next_steps.append("Consider running tests to validate recent changes.")
     if last_snapshot and last_snapshot.get("next_steps"):
-        next_steps.extend(last_snapshot.get("next_steps") or [])
+        next_steps.extend(_ensure_string_list(last_snapshot.get("next_steps")))
 
     decisions: List[str] = []
 

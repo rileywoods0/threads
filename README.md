@@ -3,16 +3,19 @@
 Threads is a developer memory prototype with a FastAPI backend (Supabase storage) and a VS Code extension that captures IDE activity to build lightweight memory snapshots.
 
 ## Repository Layout
-- `backend/` – FastAPI app, Supabase client, memory heuristics, and SQL schema.
-- `vscode-extension/` – VS Code extension that captures editor events and renders the latest memory snapshot.
+- `backend/` - FastAPI app, Supabase client, memory heuristics, and SQL schema.
+- `vscode-extension/` - VS Code extension that captures editor events and renders the latest memory snapshot.
 
 ## Supabase Setup
 1. Create (or reuse) a Supabase project.
 2. Apply the schema in `backend/supabase_schema.sql` via the SQL editor.
-3. Add a local `.env` file in the repo root with:
+3. Copy `.env.example` to `.env` in the repo root and fill in values:
    ```bash
    SUPABASE_URL=<your project url>
-   SUPABASE_SERVICE_ROLE_KEY=<service role key>
+   # Use ONE of these (secret/service role recommended for backend writes)
+   SUPABASE_SECRET_KEY=<sb_secret_...>
+   # SUPABASE_SERVICE_ROLE_KEY=<legacy JWT service_role>
+   # SUPABASE_KEY=<generic fallback>
    API_HOST=0.0.0.0
    API_PORT=8000
    ```
@@ -44,6 +47,7 @@ Invoke-RestMethod -Uri "http://localhost:8000/session/start" -Method POST -Conte
 - Each request logs to stdout (session start/end, event batches, Supabase errors).
 - After `/session/start`, you should see new rows in `projects` and `sessions`.
 - After sending `/events` and `/session/end`, you should see rows in `events` and `memory_snapshots`.
+- `/snapshot/create` creates a checkpoint snapshot without ending the session.
 
 ## VS Code Extension
 ### Install & Build
@@ -73,29 +77,43 @@ Backend logs should show `/session/start`, `/events`, `/session/end`, and `/proj
 ## Testing & Verification Guide
 - **Backend only:**
   1. Start Uvicorn as above.
-  2. Hit `/health` and `/session/start` with `curl`.
+  2. Hit `/health` and `/session/start`.
+
+     PowerShell:
+     ```powershell
+     Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get
+     Invoke-RestMethod -Uri "http://localhost:8000/session/start" -Method Post -ContentType "application/json" -Body '{"root_path":"C:/Github/threads","project_name":"threads"}'
+     ```
+
+     Note: in PowerShell, `curl` is an alias for `Invoke-WebRequest` (not curl.exe). Use `Invoke-RestMethod` for JSON APIs.
   3. Post an events batch:
-     ```bash
-     curl -X POST http://localhost:8000/events \
-       -H "Content-Type: application/json" \
-       -d '{"session_id":"<id from start>","events":[{"event_type":"file_edit","data":{"filePath":"/tmp/demo.py"}}]}'
+     ```powershell
+     Invoke-RestMethod -Uri "http://localhost:8000/events" -Method Post -ContentType "application/json" -Body '{"session_id":"<id from start>","events":[{"event_type":"file_edit","data":{"filePath":"C:/Github/threads/testing/src/demo.py"}}]}'
      ```
-  4. End the session:
-     ```bash
-     curl -X POST http://localhost:8000/session/end \
-       -H "Content-Type: application/json" \
-       -d '{"session_id":"<id>"}'
+  4. Create a checkpoint snapshot (does not end session):
+     ```powershell
+     Invoke-RestMethod -Uri "http://localhost:8000/snapshot/create" -Method Post -ContentType "application/json" -Body '{"session_id":"<id>","reason":"manual"}'
      ```
-  5. Check Supabase Dashboard tables (`projects`, `sessions`, `events`, `memory_snapshots`) for new rows.
+  5. End the session:
+     ```powershell
+     Invoke-RestMethod -Uri "http://localhost:8000/session/end" -Method Post -ContentType "application/json" -Body '{"session_id":"<id>"}'
+     ```
+  6. Check Supabase Dashboard tables (`projects`, `sessions`, `events`, `memory_snapshots`) for new rows.
 - **Extension + backend:** follow the debug workflow above and watch backend logs for the incoming requests.
 - **Testing workspace:** open `testing/` in the Extension Development Host and follow `testing/CHECKLIST.md` for a full end-to-end verification flow.
 
 ## Troubleshooting
 - **TypeScript timer typing errors:** ensure `flushTimer` is typed as `NodeJS.Timeout | undefined` (see `src/extension.ts`).
-- **No requests hitting backend:** verify `threads.backendUrl` in VS Code settings and confirm `curl http://localhost:8000/health` succeeds.
+- **No requests hitting backend:** verify `threads.backendUrl` in VS Code settings and confirm `Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get` succeeds.
 - **No Supabase writes:** confirm `.env` values are loaded; backend logs will print Supabase errors to the console.
 - **Webview not updating:** use **Threads: Save State Now** to flush events and create a snapshot, then re-open **Threads: Show Last State**.
 
 ## Notes
 - Secrets stay in your local `.env`; none are committed.
 - Memory snapshots are heuristic (no LLM calls) so they remain fast and predictable.
+
+## Naming
+Threads is a working name. If you need a safer/product-clarity alternative, consider: Threadline, Flowline, Handoff, Continuum, Threaded, or ResumePoint.
+
+## Icon
+The activity bar icon is configured in `vscode-extension/package.json` under `contributes.viewsContainers.activitybar[0].icon` and points at `vscode-extension/media/icon-threaded-node.svg` (swap to another SVG in `vscode-extension/media/` if you prefer).

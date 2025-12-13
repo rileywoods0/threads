@@ -50,7 +50,7 @@ export class ThreadsPanel {
 
     const panel = vscode.window.createWebviewPanel(
       'threadsSnapshot',
-      'Threads – Last Session',
+      'Threads - Last Session',
       column,
       { enableScripts: true }
     );

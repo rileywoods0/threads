@@ -35,29 +35,41 @@ let openFilesOrdered: string[] = [];
 let activeFilePath: string | null = null;
 let lastActivityAtMs = Date.now();
 let eventsSinceSnapshot = 0;
+let meaningfulScoreSinceSnapshot = 0;
 let lastFlushAtMs: number | null = null;
 let lastSnapshotAtMs: number | null = null;
 let lastSnapshotId: string | null = null;
 let lastBackendError: string | null = null;
 let checkpointTimer: NodeJS.Timeout | undefined;
 let gitBranchName: string | null = null;
+let gitHeadPath: string | null = null;
+let lastGitHeadValue: string | null = null;
 let toastStampPath: string | null = null;
 let extensionContext: vscode.ExtensionContext | null = null;
+let lastCheckpointReason: string | null = null;
+let focusTimestamps: number[] = [];
+let editEventsSinceSnapshot = 0;
+let lastFrictionEmittedAtMs = 0;
 
 function getConfig() {
   const config = vscode.workspace.getConfiguration('threads');
   const resumeModeFromSetting = config.get<string>('resumeMode');
   const resumePrompt = config.get<boolean>('resumePrompt', true);
   const resumeMode = resumeModeFromSetting ?? (resumePrompt ? 'prompt' : 'off');
+  const longBreakHours = config.get<number>('resume.longBreakHours', 8);
+  const minMeaningfulScore = config.get<number>('autoCheckpoint.minMeaningfulScore', 15);
+  const deprecatedMinEvents = config.get<number>('autoCheckpoint.minEvents', 20);
   return {
     backendUrl: config.get<string>('backendUrl', 'http://localhost:8000'),
     flushIntervalMs: config.get<number>('eventFlushIntervalMs', 5000),
     resumeMode,
+    longBreakHours,
     autoCheckpoint: {
       enabled: config.get<boolean>('autoCheckpoint.enabled', true),
       intervalMinutes: config.get<number>('autoCheckpoint.intervalMinutes', 15),
       idleMinutes: config.get<number>('autoCheckpoint.idleMinutes', 8),
-      minEvents: config.get<number>('autoCheckpoint.minEvents', 20),
+      minMeaningfulScore,
+      minEvents: deprecatedMinEvents,
       onShutdown: config.get<boolean>('autoCheckpoint.onShutdown', true),
       onBranchChange: config.get<boolean>('autoCheckpoint.onBranchChange', true)
     }
@@ -110,8 +122,53 @@ function shouldIgnoreFile(filePath: string): boolean {
   return ignoredSegments.some((seg) => normalized.includes(seg));
 }
 
+type EventCategory =
+  | 'FOCUS'
+  | 'EDIT'
+  | 'NAVIGATION'
+  | 'EXECUTION'
+  | 'STATE_CHANGE'
+  | 'FRICTION'
+  | 'BOUNDARY'
+  | 'INTENT';
+
+function scoreForEvent(event_type: string, _data: Record<string, unknown>): { score: number; category: EventCategory } {
+  switch (event_type) {
+    case 'file_edit':
+      return { score: 5, category: 'EDIT' };
+    case 'file_focus':
+      return { score: 1, category: 'FOCUS' };
+    case 'debug_start':
+      return { score: 5, category: 'EXECUTION' };
+    case 'debug_end':
+      return { score: 1, category: 'EXECUTION' };
+    case 'task_start':
+      return { score: 4, category: 'EXECUTION' };
+    case 'task_end':
+      return { score: 1, category: 'EXECUTION' };
+    case 'branch_change':
+      return { score: 6, category: 'STATE_CHANGE' };
+    case 'friction_switching':
+      return { score: 2, category: 'FRICTION' };
+    default:
+      return { score: 1, category: 'NAVIGATION' };
+  }
+}
+
+function pruneOldTimestamps(timestamps: number[], windowMs: number): number[] {
+  const cutoff = Date.now() - windowMs;
+  return timestamps.filter((t) => t >= cutoff);
+}
+
 function queueEvent(event_type: string, data: Record<string, unknown>) {
   const filePath = data.filePath;
+  if (
+    (event_type === 'file_edit' || event_type === 'file_focus') &&
+    typeof filePath === 'string' &&
+    shouldIgnoreFile(filePath)
+  ) {
+    return;
+  }
   if (typeof filePath === 'string' && !shouldIgnoreFile(filePath)) {
     if (event_type === 'file_edit' || event_type === 'file_focus') {
       touchedFiles.add(filePath);
@@ -120,6 +177,28 @@ function queueEvent(event_type: string, data: Record<string, unknown>) {
 
   lastActivityAtMs = Date.now();
   eventsSinceSnapshot += 1;
+  const scored = scoreForEvent(event_type, data);
+  meaningfulScoreSinceSnapshot += scored.score;
+  if (event_type === 'file_edit') {
+    editEventsSinceSnapshot += 1;
+  }
+
+  if (event_type === 'file_focus') {
+    focusTimestamps.push(Date.now());
+    focusTimestamps = pruneOldTimestamps(focusTimestamps, 2 * 60_000);
+    const tooMuchSwitching = focusTimestamps.length >= 14 && editEventsSinceSnapshot === 0;
+    const quietWindow = Date.now() - lastFrictionEmittedAtMs > 10 * 60_000;
+    if (tooMuchSwitching && quietWindow) {
+      lastFrictionEmittedAtMs = Date.now();
+      pendingEvents.push({
+        event_type: 'friction_switching',
+        timestamp: new Date().toISOString(),
+        data: { focusEventsIn2Min: focusTimestamps.length }
+      });
+      meaningfulScoreSinceSnapshot += scoreForEvent('friction_switching', {}).score;
+    }
+  }
+
   pendingEvents.push({
     event_type,
     timestamp: new Date().toISOString(),
@@ -159,12 +238,17 @@ async function startSession(context: vscode.ExtensionContext) {
   summaryFilePath = path.join(rootPath, '.threads', 'last-session.md');
   stateFilePath = path.join(rootPath, '.threads', 'last-session-state.json');
   toastStampPath = path.join(rootPath, '.threads', 'toast-stamps.json');
+  gitHeadPath = path.join(rootPath, '.git', 'HEAD');
+  lastGitHeadValue = null;
   touchedFiles = new Set<string>();
   selectionByFile = new Map<string, { line: number; character: number }>();
   openFilesOrdered = [];
   activeFilePath = null;
   lastActivityAtMs = Date.now();
   eventsSinceSnapshot = 0;
+  meaningfulScoreSinceSnapshot = 0;
+  editEventsSinceSnapshot = 0;
+  focusTimestamps = [];
   lastSnapshotAtMs = Date.now();
   lastSnapshotId = null;
   const projectName = path.basename(rootPath);
@@ -242,6 +326,9 @@ async function endSession(showNotification = false, showPanel = true): Promise<T
 
     sessionId = null;
     eventsSinceSnapshot = 0;
+    meaningfulScoreSinceSnapshot = 0;
+    editEventsSinceSnapshot = 0;
+    focusTimestamps = [];
     lastSnapshotAtMs = Date.now();
     lastSnapshotId = getSnapshotId(snapshot);
     return snapshot;
@@ -254,19 +341,20 @@ async function endSession(showNotification = false, showPanel = true): Promise<T
 
 async function createCheckpoint(reason: string, options?: { force?: boolean }) {
   const { backendUrl, autoCheckpoint } = getConfig();
-  if (!autoCheckpoint.enabled) {
-    return;
-  }
   if (!sessionId) {
     return;
   }
 
   const force = options?.force ?? false;
-  if (!force && eventsSinceSnapshot < autoCheckpoint.minEvents) {
+  if (!autoCheckpoint.enabled && !force) {
+    return;
+  }
+  const scoreThreshold = autoCheckpoint.minMeaningfulScore ?? autoCheckpoint.minEvents ?? 15;
+  if (!force && meaningfulScoreSinceSnapshot < scoreThreshold) {
     return;
   }
 
-  logInfo(`Threads: Auto-checkpoint triggered (${reason}) eventsSinceSnapshot=${eventsSinceSnapshot}`);
+  logInfo(`Threads: Checkpoint triggered (${reason}) score=${meaningfulScoreSinceSnapshot} events=${eventsSinceSnapshot}`);
   await flushEvents();
 
   try {
@@ -281,8 +369,12 @@ async function createCheckpoint(reason: string, options?: { force?: boolean }) {
     await persistLastSessionState(snapshot);
     threadsViewProvider?.refresh();
     eventsSinceSnapshot = 0;
+    meaningfulScoreSinceSnapshot = 0;
+    editEventsSinceSnapshot = 0;
+    focusTimestamps = [];
     lastSnapshotAtMs = Date.now();
     lastSnapshotId = getSnapshotId(snapshot);
+    lastCheckpointReason = reason;
     await refreshMomentumUI();
     await maybeToastOncePerDay('Threads saved a checkpoint automatically.');
     await pulseStatusBar('Threads: checkpoint saved');
@@ -364,7 +456,7 @@ type LastSessionState = {
 
 function formatSnapshotMarkdown(snapshot: ThreadsSnapshot): string {
   const lines: string[] = [];
-  lines.push('# Threads – Last Session');
+  lines.push('# Threads - Last Session');
   lines.push('');
   lines.push('## Current Goal');
   lines.push(snapshot.current_goal || 'Not set');
@@ -527,11 +619,30 @@ async function openOrCreateSummaryFile() {
 }
 
 async function maybeShowResumePrompt() {
-  const { resumeMode } = getConfig();
+  const { resumeMode, longBreakHours } = getConfig();
   if (resumeMode === 'off' || resumePromptShown) {
     return;
   }
   resumePromptShown = true;
+
+  const state = await readLastSessionState();
+  if (state?.savedAt) {
+    const ts = Date.parse(state.savedAt);
+    if (!Number.isNaN(ts)) {
+      const hours = (Date.now() - ts) / 3_600_000;
+      if (hours >= longBreakHours) {
+        const choice = await vscode.window.showInformationMessage(
+          'Resume where you left off?',
+          'Resume',
+          'Later'
+        );
+        if (choice === 'Resume') {
+          await resumeWhereILeftOff();
+        }
+        return;
+      }
+    }
+  }
 
   if (resumeMode === 'quiet') {
     return;
@@ -686,7 +797,7 @@ async function exportContextBundle() {
   const nextSteps = state?.nextSteps ?? [];
 
   const shortForAgent: string[] = [];
-  shortForAgent.push('# Threads – Context (Short)');
+  shortForAgent.push('# Threads - Context (Short)');
   shortForAgent.push('');
   if (goal) {
     shortForAgent.push(`Goal: ${goal}`);
@@ -705,7 +816,7 @@ async function exportContextBundle() {
   shortForAgent.push((lastSessionMarkdown.match(/## Summary[\s\S]*$/)?.[0] ?? '').trim() || '(none)');
 
   const fullMarkdown: string[] = [];
-  fullMarkdown.push('# Threads – Context Bundle');
+  fullMarkdown.push('# Threads - Context Bundle');
   fullMarkdown.push('');
   fullMarkdown.push(`Workspace: ${rootPath}`);
   fullMarkdown.push(`Generated: ${new Date().toISOString()}`);
@@ -717,7 +828,7 @@ async function exportContextBundle() {
     for (const s of snapshots) {
       const when = new Date(s.created_at).toLocaleString();
       const hint = (s.current_goal || s.summary_text || '').toString().trim();
-      fullMarkdown.push(`- ${when} — ${hint || s.id}`);
+      fullMarkdown.push(`- ${when} - ${hint || s.id}`);
     }
   }
   fullMarkdown.push('');
@@ -776,6 +887,7 @@ async function refreshMomentumUI() {
     return;
   }
 
+  const { autoCheckpoint } = getConfig();
   const state = await readLastSessionState();
   const fileCount = state?.files?.length ?? 0;
   const goal = (state?.currentGoal || '').trim();
@@ -788,17 +900,28 @@ async function refreshMomentumUI() {
     }
   }
   const last = lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleTimeString() : null;
-  statusBarItem.text = 'Threads: In session';
-  const tip = nextStep ? `Next: ${nextStep}` : '';
-  statusBarItem.tooltip = goal
-    ? `Resume: ${goal}${fileCount ? ` (${fileCount} files)` : ''}${tip ? `\n${tip}` : ''}`
-    : fileCount
-      ? `Resume available (${fileCount} files)${tip ? `\n${tip}` : ''}`
-      : 'Threads is capturing session context.';
-
+  const scoreThreshold = autoCheckpoint.minMeaningfulScore ?? autoCheckpoint.minEvents ?? 15;
+  const checkpointReady = autoCheckpoint.enabled && meaningfulScoreSinceSnapshot >= scoreThreshold;
+  statusBarItem.text = checkpointReady ? 'Threads: In session*' : 'Threads: In session';
+  const lines: string[] = [];
+  lines.push(statusBarItem.text);
   if (last) {
-    statusBarItem.tooltip += `\nLast checkpoint: ${last}`;
+    lines.push(`Last checkpoint: ${last}${lastCheckpointReason ? ` (${lastCheckpointReason})` : ''}`);
   }
+  if (fileCount) {
+    lines.push(`Last session files: ${fileCount}`);
+  }
+  lines.push(`Since checkpoint: ${meaningfulScoreSinceSnapshot} score | ${eventsSinceSnapshot} events`);
+  if (checkpointReady) {
+    lines.push('Checkpoint ready: yes');
+  }
+  if (goal) {
+    lines.push(`Goal: ${goal}`);
+  }
+  if (nextStep) {
+    lines.push(`Next: ${nextStep}`);
+  }
+  statusBarItem.tooltip = lines.join('\n');
 }
 
 async function resumeWhereILeftOff() {
@@ -914,17 +1037,18 @@ async function showStatusMenu() {
   const state = await readLastSessionState();
   const filesTouched = state?.files?.length ?? 0;
   const last = lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleTimeString() : null;
-  const subtitle = `${filesTouched} files touched${last ? ` • last checkpoint ${last}` : ''}`;
+  const subtitle = `${filesTouched} files${last ? ` | last checkpoint ${last}` : ''}`;
 
   const pick = await vscode.window.showQuickPick(
     [
-      { label: 'Resume Workspace', description: subtitle, action: 'resume' },
-      { label: 'Show Last Session', description: 'Open snapshot panel', action: 'show' },
-      { label: 'Save State Now', description: 'Ends session + starts new', action: 'save' },
-      { label: 'Browse Snapshots', description: 'Open history', action: 'browse' },
-      { label: 'Export Context Bundle', description: 'File / clipboard / agent prompt', action: 'export' },
-      { label: 'Diagnostics', description: 'Show runtime state', action: 'diag' },
-      { label: 'Show Output Log', description: 'Threads output channel', action: 'out' }
+      { label: 'Resume workspace', description: subtitle, action: 'resume' },
+      { label: 'Show last session', description: 'Opens the snapshot panel', action: 'show' },
+      { label: 'Save checkpoint', description: 'Saves a snapshot without ending the session', action: 'checkpoint' },
+      { label: 'Save state now', description: 'Ends session + starts new', action: 'save' },
+      { label: 'Browse snapshots', description: 'Pick from history', action: 'browse' },
+      { label: 'Export context bundle', description: 'Full file / copy / agent prompt', action: 'export' },
+      { label: 'Diagnostics', description: 'Shows runtime state', action: 'diag' },
+      { label: 'Show output log', description: 'Threads output channel', action: 'out' }
     ],
     { title: 'Threads', placeHolder: 'Choose an action' }
   );
@@ -935,6 +1059,8 @@ async function showStatusMenu() {
     await resumeWhereILeftOff();
   } else if (pick.action === 'show') {
     await showLatestSnapshot();
+  } else if (pick.action === 'checkpoint') {
+    await createCheckpoint('manual', { force: true });
   } else if (pick.action === 'save') {
     if (extensionContext) {
       await saveStateNow(extensionContext);
@@ -961,10 +1087,12 @@ async function showDiagnostics() {
   lines.push(`Session ID: \`${sessionId ?? '(none)'}\``);
   lines.push(`Pending events: \`${pendingEvents.length}\``);
   lines.push(`Events since checkpoint: \`${eventsSinceSnapshot}\``);
+  lines.push(`Meaningful score since checkpoint: \`${meaningfulScoreSinceSnapshot}\``);
   lines.push(`Last activity: \`${new Date(lastActivityAtMs).toLocaleString()}\``);
   lines.push(`Last flush: \`${lastFlushAtMs ? new Date(lastFlushAtMs).toLocaleString() : '(none)'}\``);
   lines.push(`Last snapshot time: \`${lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleString() : '(none)'}\``);
   lines.push(`Last snapshot id: \`${lastSnapshotId ?? '(none)'}\``);
+  lines.push(`Last checkpoint reason: \`${lastCheckpointReason ?? '(none)'}\``);
   lines.push(`Last backend error: \`${lastBackendError ?? '(none)'}\``);
   lines.push('');
   lines.push('## Auto-checkpoint settings');
@@ -1039,6 +1167,10 @@ async function checkpointTick() {
   const intervalMs = autoCheckpoint.intervalMinutes * 60_000;
   const idleMs = autoCheckpoint.idleMinutes * 60_000;
 
+  if (autoCheckpoint.onBranchChange) {
+    await checkGitHeadFallback();
+  }
+
   if (intervalMs > 0 && lastSnapshotAtMs && now - lastSnapshotAtMs >= intervalMs) {
     await createCheckpoint('interval');
     return;
@@ -1046,6 +1178,46 @@ async function checkpointTick() {
 
   if (idleMs > 0 && now - lastActivityAtMs >= idleMs) {
     await createCheckpoint('idle');
+  }
+}
+
+function parseBranchFromHead(headValue: string): string | null {
+  const trimmed = headValue.trim();
+  if (trimmed.startsWith('ref:')) {
+    const ref = trimmed.replace(/^ref:\s*/, '').trim();
+    const parts = ref.split('/');
+    return parts[parts.length - 1] || ref;
+  }
+  return 'detached';
+}
+
+async function checkGitHeadFallback() {
+  if (!gitHeadPath) {
+    return;
+  }
+  try {
+    const current = await fs.readFile(gitHeadPath, 'utf8');
+    if (lastGitHeadValue === null) {
+      lastGitHeadValue = current;
+      return;
+    }
+    if (current === lastGitHeadValue) {
+      return;
+    }
+    const prevBranch = parseBranchFromHead(lastGitHeadValue);
+    const nextBranch = parseBranchFromHead(current);
+    lastGitHeadValue = current;
+    if (!prevBranch || !nextBranch || prevBranch === nextBranch) {
+      return;
+    }
+    queueEvent('branch_change', { from: prevBranch, to: nextBranch, source: 'git_head' });
+    const reason = `branch_change:${prevBranch}->${nextBranch}`;
+    lastCheckpointReason = reason;
+    if (meaningfulScoreSinceSnapshot > 0 || eventsSinceSnapshot > 0) {
+      await createCheckpoint(reason, { force: true });
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -1074,8 +1246,10 @@ async function tryWireGitBranchDetection() {
     if (next && next !== gitBranchName) {
       const prev = gitBranchName;
       gitBranchName = next;
-      if (eventsSinceSnapshot > 0) {
-        void createCheckpoint(`branch_change:${prev ?? 'unknown'}->${next}`, { force: true });
+      queueEvent('branch_change', { from: prev ?? 'unknown', to: next });
+      lastCheckpointReason = `branch_change:${prev ?? 'unknown'}->${next}`;
+      if (meaningfulScoreSinceSnapshot > 0 || eventsSinceSnapshot > 0) {
+        void createCheckpoint(lastCheckpointReason, { force: true });
       }
     }
   });
@@ -1091,6 +1265,13 @@ function registerEventListeners(context: vscode.ExtensionContext) {
         return;
       }
       queueEvent('file_edit', { filePath: doc.uri.fsPath, languageId: doc.languageId });
+    }),
+    vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      const files = editors
+        .filter((e) => e.document.uri.scheme === 'file')
+        .map((e) => e.document.uri.fsPath)
+        .filter((f) => !shouldIgnoreFile(f));
+      openFilesOrdered = files;
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (editor?.document) {
@@ -1121,6 +1302,16 @@ function registerEventListeners(context: vscode.ExtensionContext) {
         return;
       }
       selectionByFile.set(filePath, { line: pos.line, character: pos.character });
+    }),
+    vscode.tasks.onDidStartTaskProcess((e) => {
+      queueEvent('task_start', { name: e.execution.task.name, taskId: e.execution.task.definition?.type });
+    }),
+    vscode.tasks.onDidEndTaskProcess((e) => {
+      queueEvent('task_end', {
+        name: e.execution.task.name,
+        taskId: e.execution.task.definition?.type,
+        exitCode: e.exitCode ?? null
+      });
     }),
     vscode.debug.onDidStartDebugSession((debugSession) =>
       queueEvent('debug_start', { name: debugSession.name, type: debugSession.type })
@@ -1165,6 +1356,9 @@ export async function activate(context: vscode.ExtensionContext) {
   const resumeCommand = vscode.commands.registerCommand('threads.resumeWhereILeftOff', resumeWhereILeftOff);
   const menuCommand = vscode.commands.registerCommand('threads.statusMenu', showStatusMenu);
   const diagnosticsCommand = vscode.commands.registerCommand('threads.diagnostics', showDiagnostics);
+  const checkpointNowCommand = vscode.commands.registerCommand('threads.checkpointNow', async () => {
+    await createCheckpoint('manual', { force: true });
+  });
 
   context.subscriptions.push(
     showCommand,
@@ -1176,7 +1370,8 @@ export async function activate(context: vscode.ExtensionContext) {
     exportBundleCommand,
     resumeCommand,
     menuCommand,
-    diagnosticsCommand
+    diagnosticsCommand,
+    checkpointNowCommand
   );
   ensureStatusBarItem(context);
   logInfo(`Threads: Extension activated (projectId=${projectId ?? 'unknown'}).`);
