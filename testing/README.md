@@ -12,12 +12,15 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 2. Confirm the status bar shows `Threads: In session`. Click it for a quick action menu.
 3. Open and save any file in `testing/src/` (e.g., `demo.py`, `demo.ts`, `notes.md`) to emit `file_edit` and `file_focus` events.
 4. Use **Threads: Save State Now** from the Command Palette (Ctrl+Shift+P) to end the session, generate a snapshot, and immediately start a new one. This also writes `.threads/last-session.md` in the workspace with a markdown summary that LLMs can ingest.
-5. Use **Threads: Show Last State** to open the snapshot webview; verify sections and the copy-summary button.
+5. Use **Threads: Show Last State** to open the snapshot webview; verify sections and the buttons:
+   - Resume workspace
+   - Copy for LLM (choose a mode)
+   - Start here actions (anchor file / run last task, when available)
 6. Use **Threads: Open Last Summary Markdown** to open the generated `.threads/last-session.md` file.
 7. Use **Threads: Browse Snapshots** to view older snapshots from history.
 8. Watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 9. Optional: run **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` (great to paste into an AI assistant when you return later).
-10. Optional: run **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
+10. Optional: run **Threads: Resume Where I Left Off** to reopen the exact files you touched last session (best-effort cursor + column restore, and reveals the anchor file in Explorer).
 11. Optional: do nothing for a few minutes after activity; auto-checkpoint should create a snapshot without opening any panels.
 
 > Tip: run commands from the Command Palette, not the Debug Console, to avoid syntax errors.

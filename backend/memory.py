@@ -57,12 +57,12 @@ def extract_session_facts(session: Dict[str, Any], events: List[Dict[str, Any]])
     for event in events:
         event_type = event.get("event_type") or "unknown"
         event_counts[event_type] = event_counts.get(event_type, 0) + 1
-        if event_type == "branch_change":
+        if event_type in {"branch_change", "git.branch.change"}:
             data = _parse_event_data(event.get("data"))
             to_branch = data.get("to") or data.get("branch") or data.get("name")
             if isinstance(to_branch, str) and to_branch.strip():
                 branches_to.add(to_branch.strip())
-    used_debugger = any(evt.get("event_type") in {"debug_start", "debugStart"} for evt in events)
+    used_debugger = any(evt.get("event_type") in {"debug_start", "debugStart", "debug.start"} for evt in events)
 
     return {
         "started_at": session.get("started_at"),
@@ -131,9 +131,11 @@ def generate_memory_snapshot(
     event_counts = facts.get("event_counts") or {}
     branches_to = facts.get("branches_to") or []
 
-    tasks_started = int(event_counts.get("task_start", 0) or 0)
-    branch_changes = int(event_counts.get("branch_change", 0) or 0)
-    friction_switching = int(event_counts.get("friction_switching", 0) or 0)
+    tasks_started = int(event_counts.get("task_start", 0) or 0) + int(event_counts.get("task.start", 0) or 0)
+    branch_changes = int(event_counts.get("branch_change", 0) or 0) + int(event_counts.get("git.branch.change", 0) or 0)
+    friction_switching = int(event_counts.get("friction_switching", 0) or 0) + int(
+        event_counts.get("friction.context_switching", 0) or 0
+    )
 
     completed_work: List[str] = []
     if files_touched:

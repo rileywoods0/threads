@@ -18,6 +18,10 @@
     "onCommand:threads.statusMenu",
     "onCommand:threads.diagnostics",
     "onCommand:threads.checkpointNow",
+    "onCommand:threads.copyForLLM",
+    "onCommand:threads.openAnchorFile",
+    "onCommand:threads.runLastTask",
+    "onCommand:threads.sendFeedback",
     "onView:threads.view"
   ],
   "main": "./out/extension.js",
@@ -70,6 +74,22 @@
       {
         "command": "threads.checkpointNow",
         "title": "Threads: Save Checkpoint"
+      },
+      {
+        "command": "threads.copyForLLM",
+        "title": "Threads: Copy for LLM"
+      },
+      {
+        "command": "threads.openAnchorFile",
+        "title": "Threads: Open Anchor File"
+      },
+      {
+        "command": "threads.runLastTask",
+        "title": "Threads: Run Last Task"
+      },
+      {
+        "command": "threads.sendFeedback",
+        "title": "Threads: Send Feedback"
       }
     ],
     "viewsContainers": {
@@ -77,7 +97,7 @@
         {
           "id": "threads",
           "title": "Threads",
-          "icon": "media/icon-threaded-node.svg"
+          "icon": "media/icon-flowmark.svg"
         }
       ]
     },
@@ -158,6 +178,44 @@
           "default": 8,
           "minimum": 1,
           "description": "If the project hasn't been opened for this many hours, show a one-time resume prompt."
+        },
+        "threads.startup.openSnapshotPanel": {
+          "type": "string",
+          "enum": ["off", "longBreak", "always"],
+          "default": "off",
+          "description": "Optionally open the Threads snapshot panel on workspace open (can be disruptive)."
+        },
+        "threads.export.maxFiles": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of files to include in exports (Copy for LLM / context bundles)."
+        },
+        "threads.export.redactHomeDir": {
+          "type": "boolean",
+          "default": true,
+          "description": "Redact your home directory from exported file paths (replaced with ~)."
+        },
+        "threads.export.includeFilePaths": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include file paths in exports (otherwise use file names only)."
+        },
+        "threads.export.includeTaskHistory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include recent task context (best-effort) in exports."
+        },
+        "threads.export.includeDebugSummary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include debug/run signals (best-effort) in exports."
+        },
+        "threads.feedback.githubRepo": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: GitHub repo in the form owner/repo for opening a prefilled issue."
         },
         "threads.privacy.notice": {
           "type": "string",

@@ -43,8 +43,11 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 ## 4) Resume \"where I left off\"
 - Close the editors you had open (optional).
 - Run **Threads: Resume Where I Left Off**
-  - Choose \"Reopen files\" and confirm it reopens the last touched files.
+  - Confirm it reopens the last touched/open files (may ask to open last 8 if there are many).
   - Confirm cursor positions restore for reopened files (best effort).
+  - Confirm the active file is focused at the end (best effort).
+  - Confirm the anchor/active file is revealed in the Explorer (best effort).
+  - If you had multiple editor columns, confirm files reopen into the same columns (best effort).
 
 ## 5) History browsing
 - Run **Threads: Browse Snapshots**
@@ -57,6 +60,23 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
   - Choose **Markdown file (Full)** -> expect `.threads/context-bundle.md` created and opened.
   - Choose **Copy for agent (Short)** -> paste into a scratch file; confirm it's compact.
   - Choose **Copy agent prompt (Opt-in)** -> paste into an AI tool; confirm it includes instructions + context.
+
+## 6b) Copy for LLM (snapshot panel CTA)
+- Open **Threads: Show Last State** and click **Copy for LLM**
+  - Try **Compact (recommended)**: confirm it contains goal, anchor, recent actions, next steps, and open questions.
+  - Try **Debug mode**: confirm it includes backend URL + snapshot/session ids (no secrets).
+  - Try **Deep mode**: confirm it includes a small recent snapshot history block.
+
+## 6c) Redaction settings
+- With `threads.export.redactHomeDir=true` (default), exported file paths should show `~` instead of your home directory.
+- Toggle `threads.export.includeFilePaths=false` and confirm exports switch to file names only.
+
+## 6d) Smart surfacing (long-break resume prompt)
+- Simulate a long break by editing `testing/.threads/last-session-state.json` and setting `savedAt` to >8 hours ago.
+- Reload the window, then switch between 2+ files within ~45 seconds without saving.
+- Expected:
+  - A single prompt appears: \"Resume where you left off?\".
+  - It does not show repeatedly in the same session.
 
 ## 7) Diagnostics
 - Run **Threads: Diagnostics**

@@ -60,8 +60,12 @@ npm run compile
 ### In-Editor UI
 - Open the **Threads** view in the Activity Bar to access common actions (resume, browse snapshots, open summary markdown, health check).
 - The status bar shows `Threads: In session`; clicking it opens a quick action menu (resume, show last session, save state, browse snapshots, export bundle, diagnostics).
+- The snapshot panel includes a primary **Copy for LLM** button with Compact/Debug/Deep modes.
 - Use **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` for pasting into Copilot/Claude/ChatGPT on project reopen.
 - Use **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
+  - Best-effort restores cursor + editor column and reveals the anchor file in the Explorer.
+- Use **Threads: Send Feedback** to open/copy a prefilled template (no secrets, no code).
+- Optional: set `threads.startup.openSnapshotPanel` to `longBreak` or `always` to auto-open the snapshot panel on workspace open (can be disruptive).
 
 ### Debug Workflow
 1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
@@ -116,4 +120,4 @@ Backend logs should show `/session/start`, `/events`, `/session/end`, and `/proj
 Threads is a working name. If you need a safer/product-clarity alternative, consider: Threadline, Flowline, Handoff, Continuum, Threaded, or ResumePoint.
 
 ## Icon
-The activity bar icon is configured in `vscode-extension/package.json` under `contributes.viewsContainers.activitybar[0].icon` and points at `vscode-extension/media/icon-threaded-node.svg` (swap to another SVG in `vscode-extension/media/` if you prefer).
+The activity bar icon is configured in `vscode-extension/package.json` under `contributes.viewsContainers.activitybar[0].icon` and points at `vscode-extension/media/icon-flowmark.svg` (swap to another SVG in `vscode-extension/media/` if you prefer).

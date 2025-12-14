@@ -25,10 +25,10 @@ Write-Host "`n[3/6] Post events"
 $eventsBody = @{
     session_id = $sessionId
     events = @(
-        @{ event_type = "file_focus"; data = @{ filePath = "$RootPath\\testing\\src\\demo.py"; languageId = "python" } }
-        @{ event_type = "file_edit"; data = @{ filePath = "$RootPath\\testing\\src\\demo.py"; languageId = "python" } }
-        @{ event_type = "debug_start"; data = @{ name = "demo"; type = "python" } }
-        @{ event_type = "debug_end"; data = @{ name = "demo"; type = "python" } }
+        @{ event_type = "editor.focus"; data = @{ filePath = "$RootPath\\testing\\src\\demo.py"; languageId = "python"; source = "vscode" } }
+        @{ event_type = "file.save"; data = @{ filePath = "$RootPath\\testing\\src\\demo.py"; languageId = "python"; source = "vscode" } }
+        @{ event_type = "debug.start"; data = @{ name = "demo"; type = "python"; source = "vscode" } }
+        @{ event_type = "debug.end"; data = @{ name = "demo"; type = "python"; source = "vscode" } }
     )
 } | ConvertTo-Json -Depth 8
 

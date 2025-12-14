@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 export type ThreadsSnapshot = {
+  id?: string | null;
   current_goal?: string | null;
   completed_work?: string[];
   open_issues?: string[];
@@ -32,18 +33,24 @@ export class ThreadsPanel {
   public static currentPanel: ThreadsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private snapshot: ThreadsSnapshot | null;
+  private meta: { hasAnchorFile: boolean; hasLastTask: boolean } | undefined;
 
-  private constructor(panel: vscode.WebviewPanel, snapshot: ThreadsSnapshot | null) {
+  private constructor(
+    panel: vscode.WebviewPanel,
+    snapshot: ThreadsSnapshot | null,
+    meta?: { hasAnchorFile: boolean; hasLastTask: boolean }
+  ) {
     this.panel = panel;
     this.snapshot = snapshot;
+    this.meta = meta;
     this.registerMessageHandler();
   }
 
-  public static render(snapshot: ThreadsSnapshot | null) {
+  public static render(snapshot: ThreadsSnapshot | null, meta?: { hasAnchorFile: boolean; hasLastTask: boolean }) {
     const column = vscode.ViewColumn.Active;
 
     if (ThreadsPanel.currentPanel) {
-      ThreadsPanel.currentPanel.update(snapshot);
+      ThreadsPanel.currentPanel.update(snapshot, meta);
       ThreadsPanel.currentPanel.panel.reveal(column);
       return;
     }
@@ -55,8 +62,8 @@ export class ThreadsPanel {
       { enableScripts: true }
     );
 
-    ThreadsPanel.currentPanel = new ThreadsPanel(panel, snapshot);
-    ThreadsPanel.currentPanel.update(snapshot);
+    ThreadsPanel.currentPanel = new ThreadsPanel(panel, snapshot, meta);
+    ThreadsPanel.currentPanel.update(snapshot, meta);
 
     panel.onDidDispose(() => {
       ThreadsPanel.currentPanel = undefined;
@@ -72,12 +79,26 @@ export class ThreadsPanel {
       }
       if (message?.type === 'resumeWorkspace') {
         await vscode.commands.executeCommand('threads.resumeWhereILeftOff');
+        return;
+      }
+      if (message?.type === 'openAnchorFile') {
+        await vscode.commands.executeCommand('threads.openAnchorFile');
+        return;
+      }
+      if (message?.type === 'runLastTask') {
+        await vscode.commands.executeCommand('threads.runLastTask');
+        return;
+      }
+      if (message?.type === 'copyForLLM') {
+        await vscode.commands.executeCommand('threads.copyForLLM');
+        return;
       }
     });
   }
 
-  private update(snapshot: ThreadsSnapshot | null) {
+  private update(snapshot: ThreadsSnapshot | null, meta?: { hasAnchorFile: boolean; hasLastTask: boolean }) {
     this.snapshot = snapshot;
+    this.meta = meta;
     const content = snapshot
       ? `
         <header class="hero">
@@ -88,6 +109,7 @@ export class ThreadsPanel {
           </div>
           <div class="actions">
             <button id="resumeWorkspace" class="primary">Resume workspace</button>
+            <button id="copyForLLM" class="ghost">Copy for LLM</button>
             ${
               snapshot.summary_text
                 ? '<button id="copySummary" class="ghost">Copy summary</button>'
@@ -95,6 +117,18 @@ export class ThreadsPanel {
             }
           </div>
         </header>
+
+        ${
+          this.meta?.hasAnchorFile || this.meta?.hasLastTask
+            ? `<section class="start-here">
+          <div class="start-title">Start here</div>
+          <div class="start-actions">
+            ${this.meta?.hasAnchorFile ? '<button id="openAnchorFile" class="ghost">Open anchor file</button>' : ''}
+            ${this.meta?.hasLastTask ? '<button id="runLastTask" class="ghost">Run last task</button>' : ''}
+          </div>
+        </section>`
+            : ''
+        }
 
         <div class="grid">
           <section class="card accent">
@@ -205,6 +239,19 @@ export class ThreadsPanel {
           }
           .ghost:hover { background: rgba(95, 209, 185, 0.12); }
           .actions { display: flex; gap: 0.5rem; align-items: center; }
+          .start-here {
+            margin-top: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+          }
+          .start-title { font-weight: 700; letter-spacing: 0.04em; }
+          .start-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
           .primary {
             background: rgba(95, 209, 185, 0.18);
             border: 1px solid rgba(95, 209, 185, 0.7);
@@ -242,6 +289,24 @@ export class ThreadsPanel {
           if (resumeButton) {
             resumeButton.addEventListener('click', () => {
               vscodeApi.postMessage({ type: 'resumeWorkspace' });
+            });
+          }
+          const copyForLLM = document.getElementById('copyForLLM');
+          if (copyForLLM) {
+            copyForLLM.addEventListener('click', () => {
+              vscodeApi.postMessage({ type: 'copyForLLM' });
+            });
+          }
+          const openAnchor = document.getElementById('openAnchorFile');
+          if (openAnchor) {
+            openAnchor.addEventListener('click', () => {
+              vscodeApi.postMessage({ type: 'openAnchorFile' });
+            });
+          }
+          const runLastTask = document.getElementById('runLastTask');
+          if (runLastTask) {
+            runLastTask.addEventListener('click', () => {
+              vscodeApi.postMessage({ type: 'runLastTask' });
             });
           }
         </script>

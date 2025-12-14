@@ -7,6 +7,10 @@
   "threads.autoCheckpoint.minMeaningfulScore": 10,
   "threads.autoCheckpoint.onShutdown": true,
   "threads.autoCheckpoint.onBranchChange": true,
+  "threads.resume.longBreakHours": 1,
+  "threads.export.maxFiles": 10,
+  "threads.export.redactHomeDir": true,
+  "threads.export.includeFilePaths": true,
   "files.autoSave": "off",
   "editor.minimap.enabled": false
 }

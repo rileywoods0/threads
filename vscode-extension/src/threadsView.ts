@@ -9,7 +9,16 @@ type LastSessionState = {
   files?: string[];
 };
 
-type NodeType = 'resume' | 'lastSession' | 'recentSnapshots' | 'moreActions' | 'info' | 'snapshotMd' | 'viewAll';
+type NodeType =
+  | 'firstRun'
+  | 'firstRunInfo'
+  | 'resume'
+  | 'lastSession'
+  | 'recentSnapshots'
+  | 'moreActions'
+  | 'info'
+  | 'snapshotMd'
+  | 'viewAll';
 
 class ThreadsNode extends vscode.TreeItem {
   constructor(
@@ -25,6 +34,11 @@ class ThreadsNode extends vscode.TreeItem {
 export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode> {
   private readonly emitter = new vscode.EventEmitter<ThreadsNode | undefined>();
   public readonly onDidChangeTreeData = this.emitter.event;
+  private readonly workspaceState: vscode.Memento;
+
+  constructor(workspaceState: vscode.Memento) {
+    this.workspaceState = workspaceState;
+  }
 
   refresh() {
     this.emitter.fire(undefined);
@@ -102,6 +116,11 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       const goal = (state?.currentGoal || '').trim();
       const next = (state?.nextSteps?.[0] || '').trim();
 
+      const didCheckpoint = Boolean(this.workspaceState.get('threads.didFirstCheckpoint', false));
+      const firstRun = new ThreadsNode('firstRun', 'Getting started', vscode.TreeItemCollapsibleState.Collapsed);
+      firstRun.iconPath = new vscode.ThemeIcon('info');
+      firstRun.description = didCheckpoint ? undefined : 'Quick tips';
+
       const resume = new ThreadsNode('resume', 'Resume workspace');
       resume.iconPath = new vscode.ThemeIcon('play');
       resume.command = { command: 'threads.resumeWhereILeftOff', title: 'Resume workspace' };
@@ -119,7 +138,26 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
 
       // Keep the home view minimal. Goal/Next are shown under Last session.
       // Recent snapshots is collapsed by default for progressive disclosure.
-      return [resume, lastSession, recent, more].filter(Boolean);
+      return (didCheckpoint ? [resume, lastSession, recent, more] : [firstRun, resume, lastSession, recent, more]).filter(Boolean);
+    }
+
+    if (element.nodeType === 'firstRun') {
+      const resumeTip = new ThreadsNode('firstRunInfo', 'Resume workspace');
+      resumeTip.description = 'Reopen files + cursor (best effort)';
+      resumeTip.iconPath = new vscode.ThemeIcon('play');
+      resumeTip.command = { command: 'threads.resumeWhereILeftOff', title: 'Resume workspace' };
+
+      const copyTip = new ThreadsNode('firstRunInfo', 'Copy for LLM');
+      copyTip.description = 'Paste-ready resume context';
+      copyTip.iconPath = new vscode.ThemeIcon('copy');
+      copyTip.command = { command: 'threads.copyForLLM', title: 'Copy for LLM' };
+
+      const checkpointsTip = new ThreadsNode('firstRunInfo', 'Auto-checkpoints');
+      checkpointsTip.description = 'Quiet snapshots while you work';
+      checkpointsTip.iconPath = new vscode.ThemeIcon('history');
+      checkpointsTip.command = { command: 'threads.diagnostics', title: 'Diagnostics' };
+
+      return [resumeTip, copyTip, checkpointsTip];
     }
 
     if (element.nodeType === 'lastSession') {
