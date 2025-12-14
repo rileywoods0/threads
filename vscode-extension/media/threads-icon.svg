@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+  <g transform="rotate(-45 8 8)" fill="currentColor">
+    <!-- Top long bar -->
+    <rect x="3.0" y="3.2" width="10.0" height="1.6" rx="0.8"></rect>
+    <!-- Middle medium bar -->
+    <rect x="4.0" y="7.2" width="9.0" height="1.6" rx="0.8"></rect>
+    <!-- Bottom short bar -->
+    <rect x="5.2" y="11.2" width="7.8" height="1.6" rx="0.8"></rect>
+  </g>
+</svg>
