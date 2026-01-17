@@ -64,8 +64,8 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 ## 6b) Copy for LLM (snapshot panel CTA)
 - Open **Threads: Show Last State** and click **Copy for LLM**
   - Try **Compact (recommended)**: confirm it contains goal, anchor, recent actions, next steps, and open questions.
-  - Try **Debug mode**: confirm it includes backend URL + snapshot/session ids (no secrets).
-  - Try **Deep mode**: confirm it includes a small recent snapshot history block.
+  - Try **Debug-focused**: confirm it includes backend URL + snapshot/session ids (no secrets).
+  - Try **Deep context**: confirm it includes a small recent snapshot history block.
 
 ## 6c) Redaction settings
 - With `threads.export.redactHomeDir=true` (default), exported file paths should show `~` instead of your home directory.

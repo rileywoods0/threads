@@ -10,6 +10,11 @@ export type ThreadsSnapshot = {
   summary_text?: string | null;
 };
 
+export type ThreadsPanelMeta = {
+  anchorFileLabel?: string;
+  nextStep?: string;
+};
+
 function escapeHtml(value: string | undefined | null): string {
   if (!value) {
     return '';
@@ -33,12 +38,12 @@ export class ThreadsPanel {
   public static currentPanel: ThreadsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
   private snapshot: ThreadsSnapshot | null;
-  private meta: { hasAnchorFile: boolean; hasLastTask: boolean } | undefined;
+  private meta: ThreadsPanelMeta | undefined;
 
   private constructor(
     panel: vscode.WebviewPanel,
     snapshot: ThreadsSnapshot | null,
-    meta?: { hasAnchorFile: boolean; hasLastTask: boolean }
+    meta?: ThreadsPanelMeta
   ) {
     this.panel = panel;
     this.snapshot = snapshot;
@@ -46,7 +51,7 @@ export class ThreadsPanel {
     this.registerMessageHandler();
   }
 
-  public static render(snapshot: ThreadsSnapshot | null, meta?: { hasAnchorFile: boolean; hasLastTask: boolean }) {
+  public static render(snapshot: ThreadsSnapshot | null, meta?: ThreadsPanelMeta) {
     const column = vscode.ViewColumn.Active;
 
     if (ThreadsPanel.currentPanel) {
@@ -96,7 +101,7 @@ export class ThreadsPanel {
     });
   }
 
-  private update(snapshot: ThreadsSnapshot | null, meta?: { hasAnchorFile: boolean; hasLastTask: boolean }) {
+  private update(snapshot: ThreadsSnapshot | null, meta?: ThreadsPanelMeta) {
     this.snapshot = snapshot;
     this.meta = meta;
     const content = snapshot
@@ -108,8 +113,6 @@ export class ThreadsPanel {
             <p class="muted">Instant context so you can pick up right where you left off.</p>
           </div>
           <div class="actions">
-            <button id="resumeWorkspace" class="primary">Resume workspace</button>
-            <button id="copyForLLM" class="ghost">Copy for LLM</button>
             ${
               snapshot.summary_text
                 ? '<button id="copySummary" class="ghost">Copy summary</button>'
@@ -118,17 +121,26 @@ export class ThreadsPanel {
           </div>
         </header>
 
-        ${
-          this.meta?.hasAnchorFile || this.meta?.hasLastTask
-            ? `<section class="start-here">
-          <div class="start-title">Start here</div>
-          <div class="start-actions">
-            ${this.meta?.hasAnchorFile ? '<button id="openAnchorFile" class="ghost">Open anchor file</button>' : ''}
-            ${this.meta?.hasLastTask ? '<button id="runLastTask" class="ghost">Run last task</button>' : ''}
+        <section class="start-here">
+          <div>
+            <div class="start-title">Start here</div>
+            <div class="start-grid">
+              <div>
+                <div class="start-label">Anchor file</div>
+                <div class="start-value">${escapeHtml(this.meta?.anchorFileLabel || 'Not set')}</div>
+              </div>
+              <div>
+                <div class="start-label">Primary next step</div>
+                <div class="start-value">${escapeHtml(this.meta?.nextStep || 'Not set')}</div>
+              </div>
+            </div>
           </div>
-        </section>`
-            : ''
-        }
+          <div class="start-actions">
+            <button id="openAnchorFile" class="ghost">Open anchor</button>
+            <button id="resumeWorkspace" class="primary">Resume workspace</button>
+            <button id="copyForLLM" class="ghost emphasis">Copy for LLM</button>
+          </div>
+        </section>
 
         <div class="grid">
           <section class="card accent">
@@ -238,11 +250,16 @@ export class ThreadsPanel {
             transition: all 0.15s ease;
           }
           .ghost:hover { background: rgba(95, 209, 185, 0.12); }
+          .ghost.emphasis {
+            border-color: rgba(95, 209, 185, 0.9);
+            background: rgba(95, 209, 185, 0.08);
+            font-weight: 600;
+          }
           .actions { display: flex; gap: 0.5rem; align-items: center; }
           .start-here {
             margin-top: 0.75rem;
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: space-between;
             gap: 0.75rem;
             padding: 0.75rem 1rem;
@@ -251,6 +268,19 @@ export class ThreadsPanel {
             background: rgba(255, 255, 255, 0.03);
           }
           .start-title { font-weight: 700; letter-spacing: 0.04em; }
+          .start-grid {
+            margin-top: 0.35rem;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.35rem 1rem;
+          }
+          .start-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+          }
+          .start-value { font-weight: 600; }
           .start-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
           .primary {
             background: rgba(95, 209, 185, 0.18);

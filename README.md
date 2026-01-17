@@ -60,10 +60,10 @@ npm run compile
 ### In-Editor UI
 - Open the **Threads** view in the Activity Bar to access common actions (resume, browse snapshots, open summary markdown, health check).
 - The status bar shows `Threads: In session`; clicking it opens a quick action menu (resume, show last session, save state, browse snapshots, export bundle, diagnostics).
-- The snapshot panel includes a primary **Copy for LLM** button with Compact/Debug/Deep modes.
+- The snapshot panel includes a compact **Start here** block (anchor file, next step, and actions). **Copy for LLM** offers Compact/Debug-focused/Deep context formats.
 - Use **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` for pasting into Copilot/Claude/ChatGPT on project reopen.
 - Use **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
-  - Best-effort restores cursor + editor column and reveals the anchor file in the Explorer.
+  - Best-effort restores active editor focus, cursor/selection, and editor column.
 - Use **Threads: Send Feedback** to open/copy a prefilled template (no secrets, no code).
 - Optional: set `threads.startup.openSnapshotPanel` to `longBreak` or `always` to auto-open the snapshot panel on workspace open (can be disruptive).
 
