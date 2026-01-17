@@ -9,10 +9,12 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 - Extension compiled: from `vscode-extension/`, run `npm run compile`
 - Launch Extension Development Host (EDH): open `vscode-extension/` -> `F5`
 - In EDH, open the `testing/` folder as the workspace.
+- Optional: set `threads.resume.longBreakHours` in `testing/.vscode/settings.json` for faster long-break tests.
 
 ## 1) Health + connectivity
 - Run **Threads: Check Backend Health** -> should show `ok`.
 - Open **Output** panel -> select `Threads` output channel -> confirm logs show activation and event flushes.
+- Click the status bar `Threads: In session` -> snapshot panel should open.
 
 ## 2) Capture signals (no noise)
 - Open `testing/src/demo.py`, switch to `testing/src/demo.ts`, then back.
@@ -72,7 +74,10 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 - Toggle `threads.export.includeFilePaths=false` and confirm exports switch to file names only.
 
 ## 6d) Smart surfacing (long-break resume prompt)
-- Simulate a long break by editing `testing/.threads/last-session-state.json` and setting `savedAt` to >8 hours ago.
+- Lower `threads.resume.longBreakHours` (ex: `0.01`) in `testing/.vscode/settings.json` or run:
+  ```powershell
+  .\scripts\set-resume-test.ps1 -WorkspacePath (Get-Location).Path -LongBreakHours 0.01 -OpenSnapshotPanel longBreak -ResumeMode prompt
+  ```
 - Reload the window, then switch between 2+ files within ~45 seconds without saving.
 - Expected:
   - A single prompt appears: \"Resume where you left off?\".

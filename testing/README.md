@@ -9,19 +9,30 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 
 ## Quick test flow
 1. In the Extension Development Host, open the `testing` folder as the workspace.
-2. Confirm the status bar shows `Threads: In session`. Click it for a quick action menu.
+2. Confirm the status bar shows `Threads: In session`. Click it to open the snapshot panel (use **More actions...** in the Threads view for the full menu).
 3. Open and save any file in `testing/src/` (e.g., `demo.py`, `demo.ts`, `notes.md`) to emit `file_edit` and `file_focus` events.
 4. Use **Threads: Save State Now** from the Command Palette (Ctrl+Shift+P) to end the session, generate a snapshot, and immediately start a new one. This also writes `.threads/last-session.md` in the workspace with a markdown summary that LLMs can ingest.
 5. Use **Threads: Show Last State** to open the snapshot webview; verify sections and the buttons:
    - Resume workspace
    - Copy for LLM (choose a mode)
-   - Start here actions (anchor file / run last task, when available)
+   - Start here actions (open anchor / resume / copy for LLM)
 6. Use **Threads: Open Last Summary Markdown** to open the generated `.threads/last-session.md` file.
 7. Use **Threads: Browse Snapshots** to view older snapshots from history.
 8. Watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 9. Optional: run **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` (great to paste into an AI assistant when you return later).
 10. Optional: run **Threads: Resume Where I Left Off** to reopen the exact files you touched last session (best-effort cursor + column restore, and reveals the anchor file in Explorer).
 11. Optional: do nothing for a few minutes after activity; auto-checkpoint should create a snapshot without opening any panels.
+
+## Quick settings toggles (testing workspace)
+`testing/.vscode/settings.json` is the fastest way to tweak resume behavior:
+- `threads.resume.longBreakHours`: lower this (ex: `0.01`) to force long-break prompts/panel quickly.
+- `threads.startup.openSnapshotPanel`: set to `longBreak` (default) or `off`.
+- `threads.resumeMode`: `quiet` (default), `prompt`, or `off`.
+
+You can also use the helper script:
+```powershell
+.\scripts\set-resume-test.ps1 -WorkspacePath (Get-Location).Path -LongBreakHours 0.01 -OpenSnapshotPanel longBreak -ResumeMode prompt
+```
 
 > Tip: run commands from the Command Palette, not the Debug Console, to avoid syntax errors.
 
@@ -30,6 +41,15 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 .\scripts\backend-smoke.ps1 -BackendUrl "http://localhost:8000" -RootPath (Resolve-Path "..")
 ```
 This will hit `/health` and `/session/start` with the current repo path.
+
+## Quick verification scripts
+```powershell
+# Verify last-session-state.json fields + anchor position
+.\scripts\verify-last-session-state.ps1 -WorkspacePath (Get-Location).Path
+
+# Verify snapshot markdown files exist
+.\scripts\verify-snapshot-files.ps1 -WorkspacePath (Get-Location).Path
+```
 
 ## Optional: backend end-to-end script
 ```powershell
@@ -40,6 +60,7 @@ This runs: `/health` -> `/session/start` -> `/events` -> `/session/end` -> snaps
 ## Notes
 - `.vscode/settings.json` here pins `threads.backendUrl` to `http://localhost:8000` and shortens the flush interval for faster feedback.
 - `threads.resumeMode` defaults to `quiet` (no popups) - use the Threads sidebar or status bar to resume.
+- If you see a `punycode` deprecation warning in the debug console, it is coming from a dependency and is safe to ignore.
 - `threads.autoCheckpoint.*` is set to short values in this workspace so you can verify interval/idle triggers quickly.
 - The sample files in `src/` cover multiple languages to exercise event payloads.
 - The markdown summary lives at `.threads/last-session.md` after you save a session - perfect to hand to Copilot/Cursor/Claude as context when reopening the project.

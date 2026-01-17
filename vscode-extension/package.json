@@ -182,7 +182,7 @@
         "threads.startup.openSnapshotPanel": {
           "type": "string",
           "enum": ["off", "longBreak", "always"],
-          "default": "off",
+          "default": "longBreak",
           "description": "Optionally open the Threads snapshot panel on workspace open (can be disruptive)."
         },
         "threads.export.maxFiles": {

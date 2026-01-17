@@ -7,6 +7,14 @@ type LastSessionState = {
   currentGoal?: string;
   nextSteps?: string[];
   files?: string[];
+  openFiles?: string[];
+  openEditors?: Array<{ filePath: string; viewColumn?: number }>;
+  activeFile?: string;
+  cursors?: Record<
+    string,
+    | { line: number; character: number }
+    | { anchor: { line: number; character: number }; active: { line: number; character: number } }
+  >;
 };
 
 type NodeType =
@@ -165,6 +173,18 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       const goal = (state?.currentGoal || '').trim() || 'Not set yet';
       const next = (state?.nextSteps?.[0] || '').trim();
       const files = state?.files?.length ?? 0;
+      const anchor =
+        state?.activeFile ||
+        state?.openEditors?.[0]?.filePath ||
+        state?.openFiles?.[0] ||
+        state?.files?.[0] ||
+        '';
+      const cursor = anchor ? state?.cursors?.[anchor] : undefined;
+      const activeCursor =
+        cursor && 'active' in cursor ? cursor.active : cursor && 'line' in cursor ? cursor : undefined;
+      const line = typeof activeCursor?.line === 'number' ? activeCursor.line + 1 : null;
+      const anchorLabel = anchor ? path.basename(anchor) : '';
+      const anchorDesc = anchorLabel ? (line ? `${anchorLabel}:${line}` : anchorLabel) : 'Not set yet';
 
       const goalNode = new ThreadsNode('info', 'Goal');
       goalNode.description = goal;
@@ -178,11 +198,16 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       filesNode.description = files ? String(files) : '0';
       filesNode.iconPath = new vscode.ThemeIcon('files');
 
+      const anchorNode = new ThreadsNode('info', 'Anchor');
+      anchorNode.description = anchorDesc;
+      anchorNode.iconPath = new vscode.ThemeIcon('pin');
+      anchorNode.command = { command: 'threads.openAnchorFile', title: 'Open anchor file' };
+
       const openPanel = new ThreadsNode('info', 'Open snapshot panel');
       openPanel.iconPath = new vscode.ThemeIcon('preview');
       openPanel.command = { command: 'threads.showLastState', title: 'Show last state' };
 
-      return [goalNode, nextNode, filesNode, openPanel];
+      return [goalNode, nextNode, filesNode, anchorNode, openPanel];
     }
 
     if (element.nodeType === 'recentSnapshots') {

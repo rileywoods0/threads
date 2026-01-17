@@ -124,13 +124,13 @@ function logError(message: string, err?: unknown) {
 }
 
 function ensureStatusBarItem(context: vscode.ExtensionContext) {
-  if (!statusBarItem) {
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    statusBarItem.text = 'Threads: In session';
-    statusBarItem.tooltip = 'Threads is capturing session context.';
-    statusBarItem.command = 'threads.statusMenu';
-    context.subscriptions.push(statusBarItem);
-  }
+    if (!statusBarItem) {
+      statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+      statusBarItem.text = 'Threads: In session';
+      statusBarItem.tooltip = 'Open the last Threads snapshot';
+      statusBarItem.command = 'threads.showLastState';
+      context.subscriptions.push(statusBarItem);
+    }
   statusBarItem.show();
 }
 
@@ -721,8 +721,14 @@ function formatAnchorLabel(filePath: string, rootPath: string): string {
 function buildPanelMeta(snapshot: ThreadsSnapshot, state: LastSessionState | null): ThreadsPanelMeta {
   const anchor = getAnchorFileFromState(state);
   const nextStepRaw = (snapshot.next_steps?.[0] ?? state?.nextSteps?.[0] ?? '').toString().trim();
+  const selection = anchor ? normalizeSelectionState(state?.cursors?.[anchor]) : null;
+  const line = selection ? selection.active.line + 1 : null;
+  const col = selection ? selection.active.character + 1 : null;
+  const anchorLabel = anchor && workspaceRoot ? formatAnchorLabel(anchor, workspaceRoot) : undefined;
+  const anchorWithPos =
+    anchorLabel && line && col ? `${anchorLabel}:${line}:${col}` : anchorLabel && line ? `${anchorLabel}:${line}` : anchorLabel;
   return {
-    anchorFileLabel: anchor && workspaceRoot ? formatAnchorLabel(anchor, workspaceRoot) : undefined,
+    anchorFileLabel: anchorWithPos,
     nextStep: nextStepRaw || undefined
   };
 }
@@ -1583,23 +1589,27 @@ async function showStatusMenu() {
   const last = lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleTimeString() : null;
   const subtitle = `${filesTouched} files${last ? ` | last checkpoint ${last}` : ''}`;
 
-  const pick = await vscode.window.showQuickPick(
-    [
-      { label: 'Resume workspace', description: subtitle, action: 'resume' },
-      { label: 'Open anchor file', description: 'Jump to your last active file', action: 'anchor' },
-      { label: 'Show last session', description: 'Opens the snapshot panel', action: 'show' },
-      { label: 'Copy for LLM', description: 'Paste-ready resume context', action: 'llm' },
-      { label: 'Run last task', description: 'Best-effort re-run last task', action: 'task' },
-      { label: 'Save checkpoint', description: 'Saves a snapshot without ending the session', action: 'checkpoint' },
-      { label: 'Save state now', description: 'Ends session + starts new', action: 'save' },
-      { label: 'Browse snapshots', description: 'Pick from history', action: 'browse' },
-      { label: 'Export context bundle', description: 'Full file / copy / agent prompt', action: 'export' },
-      { label: 'Diagnostics', description: 'Shows runtime state', action: 'diag' },
-      { label: 'Send feedback', description: 'Opens/copies a feedback template', action: 'feedback' },
-      { label: 'Show output log', description: 'Threads output channel', action: 'out' }
-    ],
-    { title: 'Threads', placeHolder: 'Choose an action' }
-  );
+  const items: Array<vscode.QuickPickItem & { action?: string }> = [
+    { label: 'Resume', kind: vscode.QuickPickItemKind.Separator },
+    { label: 'Resume workspace', description: subtitle, action: 'resume' },
+    { label: 'Open anchor file', description: 'Jump to your last active file', action: 'anchor' },
+    { label: 'Review', kind: vscode.QuickPickItemKind.Separator },
+    { label: 'Show last session', description: 'Opens the snapshot panel', action: 'show' },
+    { label: 'Copy for LLM', description: 'Paste-ready resume context', action: 'llm' },
+    { label: 'Run last task', description: 'Best-effort re-run last task', action: 'task' },
+    { label: 'Snapshots', kind: vscode.QuickPickItemKind.Separator },
+    { label: 'Save checkpoint', description: 'Saves a snapshot without ending the session', action: 'checkpoint' },
+    { label: 'Save state now', description: 'Ends session + starts new', action: 'save' },
+    { label: 'Browse snapshots', description: 'Pick from history', action: 'browse' },
+    { label: 'Export', kind: vscode.QuickPickItemKind.Separator },
+    { label: 'Export context bundle', description: 'Full file / copy / agent prompt', action: 'export' },
+    { label: 'Maintenance', kind: vscode.QuickPickItemKind.Separator },
+    { label: 'Diagnostics', description: 'Shows runtime state', action: 'diag' },
+    { label: 'Send feedback', description: 'Opens/copies a feedback template', action: 'feedback' },
+    { label: 'Show output log', description: 'Threads output channel', action: 'out' }
+  ];
+
+  const pick = await vscode.window.showQuickPick(items, { title: 'Threads', placeHolder: 'Choose an action' });
   if (!pick) {
     return;
   }
@@ -1791,7 +1801,20 @@ async function tryWireGitBranchDetection() {
   }
 
   const gitExtension = vscode.extensions.getExtension('vscode.git');
-  const anyExports = gitExtension?.exports as { getAPI?: (version: number) => any } | undefined;
+  if (!gitExtension) {
+    logInfo('Threads: Git extension not available; branch change detection disabled.');
+    return;
+  }
+  try {
+    if (!gitExtension.isActive) {
+      await gitExtension.activate();
+    }
+  } catch (err) {
+    logInfo(`Threads: Git extension activation failed; branch change detection disabled. ${String(err)}`);
+    return;
+  }
+
+  const anyExports = gitExtension.exports as { getAPI?: (version: number) => any } | undefined;
   if (!anyExports?.getAPI) {
     return;
   }

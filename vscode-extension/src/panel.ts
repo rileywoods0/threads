@@ -104,6 +104,7 @@ export class ThreadsPanel {
   private update(snapshot: ThreadsSnapshot | null, meta?: ThreadsPanelMeta) {
     this.snapshot = snapshot;
     this.meta = meta;
+    const hasAnchor = Boolean(this.meta?.anchorFileLabel);
     const content = snapshot
       ? `
         <header class="hero">
@@ -136,7 +137,7 @@ export class ThreadsPanel {
             </div>
           </div>
           <div class="start-actions">
-            <button id="openAnchorFile" class="ghost">Open anchor</button>
+            <button id="openAnchorFile" class="ghost" ${hasAnchor ? '' : 'disabled'}>Open anchor</button>
             <button id="resumeWorkspace" class="primary">Resume workspace</button>
             <button id="copyForLLM" class="ghost emphasis">Copy for LLM</button>
           </div>
@@ -250,6 +251,10 @@ export class ThreadsPanel {
             transition: all 0.15s ease;
           }
           .ghost:hover { background: rgba(95, 209, 185, 0.12); }
+          .ghost:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+          }
           .ghost.emphasis {
             border-color: rgba(95, 209, 185, 0.9);
             background: rgba(95, 209, 185, 0.08);

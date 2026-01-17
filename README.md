@@ -9,13 +9,12 @@ Threads is a developer memory prototype with a FastAPI backend (Supabase storage
 ## Supabase Setup
 1. Create (or reuse) a Supabase project.
 2. Apply the schema in `backend/supabase_schema.sql` via the SQL editor.
-3. Copy `.env.example` to `.env` in the repo root and fill in values:
+3. Copy `.env.example` to `.env` in the repo root and fill in values (use the **service_role** key from Project Settings > API, not the JWT secret or database connection string):
    ```bash
    SUPABASE_URL=<your project url>
    # Use ONE of these (secret/service role recommended for backend writes)
-   SUPABASE_SECRET_KEY=<sb_secret_...>
-   # SUPABASE_SERVICE_ROLE_KEY=<legacy JWT service_role>
-   # SUPABASE_KEY=<generic fallback>
+   SUPABASE_SERVICE_ROLE_KEY=<service_role JWT key>
+   # SUPABASE_KEY=<anon JWT key>
    API_HOST=0.0.0.0
    API_PORT=8000
    ```
@@ -59,13 +58,13 @@ npm run compile
 
 ### In-Editor UI
 - Open the **Threads** view in the Activity Bar to access common actions (resume, browse snapshots, open summary markdown, health check).
-- The status bar shows `Threads: In session`; clicking it opens a quick action menu (resume, show last session, save state, browse snapshots, export bundle, diagnostics).
+- The status bar shows `Threads: In session`; clicking it opens the last snapshot panel (use **More actions...** in the Threads view for the full menu).
 - The snapshot panel includes a compact **Start here** block (anchor file, next step, and actions). **Copy for LLM** offers Compact/Debug-focused/Deep context formats.
 - Use **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` for pasting into Copilot/Claude/ChatGPT on project reopen.
 - Use **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
   - Best-effort restores active editor focus, cursor/selection, and editor column.
 - Use **Threads: Send Feedback** to open/copy a prefilled template (no secrets, no code).
-- Optional: set `threads.startup.openSnapshotPanel` to `longBreak` or `always` to auto-open the snapshot panel on workspace open (can be disruptive).
+- `threads.startup.openSnapshotPanel` defaults to `longBreak` to reopen the snapshot panel after time away (set to `off` if you prefer zero auto-panels).
 
 ### Debug Workflow
 1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
