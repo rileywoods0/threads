@@ -1,52 +1,42 @@
-# Threads Prototype (Supabase)
+# Threads (Local-first)
 
-Threads is a developer memory prototype with a FastAPI backend (Supabase storage) and a VS Code extension that captures IDE activity to build lightweight memory snapshots.
+Threads is a developer memory prototype with a VS Code extension that captures IDE activity to build lightweight memory snapshots. By default it runs fully local, with optional Supabase sync for advanced users.
 
 ## Repository Layout
-- `backend/` - FastAPI app, Supabase client, memory heuristics, and SQL schema.
+- `backend/` - Optional FastAPI app, Supabase client, memory heuristics, and SQL schema (remote mode only).
 - `vscode-extension/` - VS Code extension that captures editor events and renders the latest memory snapshot.
 
-## Supabase Setup
+## Quick start (2 minutes, local-only)
+1. Install dependencies and build the extension:
+   ```bash
+   cd vscode-extension
+   npm install
+   npm run compile
+   ```
+2. Press `F5` in `vscode-extension/` to launch the Extension Development Host.
+3. Open any workspace and start working. Threads captures context immediately (no backend required).
+4. Use **Threads: Save State Now** to generate a snapshot and open the panel.
+
+## Optional: Configure LLM (privacy-first)
+Run **Threads: Configure LLM**:
+- **Ollama (local)**: set `threads.llm.ollamaUrl` + `threads.llm.ollamaModel`.
+- **OpenAI (BYO key)**: key is stored in VS Code SecretStorage (never written to disk).
+
+## Advanced: Supabase sync (remote mode)
 1. Create (or reuse) a Supabase project.
 2. Apply the schema in `backend/supabase_schema.sql` via the SQL editor.
 3. Copy `.env.example` to `.env` in the repo root and fill in values (use the **service_role** key from Project Settings > API, not the JWT secret or database connection string):
    ```bash
    SUPABASE_URL=<your project url>
-   # Use ONE of these (secret/service role recommended for backend writes)
    SUPABASE_SERVICE_ROLE_KEY=<service_role JWT key>
-   # SUPABASE_KEY=<anon JWT key>
    API_HOST=0.0.0.0
    API_PORT=8000
    ```
-   The backend reads these automatically (see `backend/config.py`). Keep keys out of version control.
-
-## Backend
-### Install (use a virtualenv)
-```bash
-cd backend
-python -m venv .venv
-. .venv/Scripts/activate   # Windows
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-### Run the API
-From the repository root:
-```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-```
-If running from inside `backend/`, set `PYTHONPATH=..`.
-
-### Quick Checks
-```bash
-Invoke-RestMethod -Uri "http://localhost:8000/session/start" -Method POST -ContentType "application/json" -Body '{"root_path":"C:/Github/threads","project_name":"threads"}'
-```
-
-### What to Expect
-- Each request logs to stdout (session start/end, event batches, Supabase errors).
-- After `/session/start`, you should see new rows in `projects` and `sessions`.
-- After sending `/events` and `/session/end`, you should see rows in `events` and `memory_snapshots`.
-- `/snapshot/create` creates a checkpoint snapshot without ending the session.
+4. Run the API from the repository root:
+   ```bash
+   uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+   ```
+5. Set `threads.runtimeMode = remote` and `threads.remote.backendUrl = http://localhost:8000`.
 
 ## VS Code Extension
 ### Install & Build
@@ -65,6 +55,7 @@ npm run compile
   - Best-effort restores active editor focus, cursor/selection, and editor column.
 - Use **Threads: Send Feedback** to open/copy a prefilled template (no secrets, no code).
 - `threads.startup.openSnapshotPanel` defaults to `longBreak` to reopen the snapshot panel after time away (set to `off` if you prefer zero auto-panels).
+- Use **Threads: Open Data Folder** to see local snapshots/exports and **Threads: Delete Local Data** to clear everything.
 
 ### Debug Workflow
 1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
@@ -76,9 +67,19 @@ npm run compile
 7. Use **Threads: Browse Snapshots** to open older snapshots from history.
 
 Backend logs should show `/session/start`, `/events`, `/session/end`, and `/project/latest_snapshot` calls. Supabase tables should update accordingly.
+If you are in local mode, no backend logs are required.
+
+## Privacy (default-safe)
+- Captured: file paths, editor focus/save events, task/debug start/stop metadata.
+- Not captured by default: code content, `.env`/`.threads` files, or secrets.
+- LLM usage is optional and off by default. Set `threads.llm.includeCodeSnippets=true` to opt into small snippets.
+- Local data lives under `threads.dataDir` (default `${workspaceFolder}/.threads`).
+- Use **Threads: Delete Local Data** to wipe local state.
 
 ## Testing & Verification Guide
-- **Backend only:**
+- **Local-only (no backend):**
+  - Use the Extension Development Host with the `testing/` workspace and follow `testing/CHECKLIST.md`.
+- **Backend only (remote mode):**
   1. Start Uvicorn as above.
   2. Hit `/health` and `/session/start`.
 
@@ -107,13 +108,14 @@ Backend logs should show `/session/start`, `/events`, `/session/end`, and `/proj
 
 ## Troubleshooting
 - **TypeScript timer typing errors:** ensure `flushTimer` is typed as `NodeJS.Timeout | undefined` (see `src/extension.ts`).
-- **No requests hitting backend:** verify `threads.backendUrl` in VS Code settings and confirm `Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get` succeeds.
+- **No requests hitting backend:** verify `threads.runtimeMode=remote` and `threads.remote.backendUrl` in VS Code settings, then confirm `Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get` succeeds.
 - **No Supabase writes:** confirm `.env` values are loaded; backend logs will print Supabase errors to the console.
 - **Webview not updating:** use **Threads: Save State Now** to flush events and create a snapshot, then re-open **Threads: Show Last State**.
 
 ## Notes
 - Secrets stay in your local `.env`; none are committed.
-- Memory snapshots are heuristic (no LLM calls) so they remain fast and predictable.
+- LLM keys are stored in VS Code SecretStorage (never written to disk).
+- Local mode works without the backend; remote mode is optional.
 
 ## Naming
 Threads is a working name. If you need a safer/product-clarity alternative, consider: Threadline, Flowline, Handoff, Continuum, Threaded, or ResumePoint.

@@ -3,8 +3,9 @@
 Use this folder as a throwaway workspace inside the VS Code Extension Development Host to verify that the Threads extension and backend talk to each other end-to-end.
 
 ## Prereqs
-- Backend running from repo root: `uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`
-- `.env` in the repo root with valid Supabase URL + service/secret key.
+- Local mode works without a backend (default).
+- Optional: backend running from repo root for remote mode tests: `uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`
+- Optional: `.env` in the repo root with valid Supabase URL + service/role key if testing remote mode.
 - VS Code Extension Development Host launched from `vscode-extension` via `npm run compile` -> F5.
 
 ## Quick test flow
@@ -18,7 +19,7 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
    - Start here actions (open anchor / resume / copy for LLM)
 6. Use **Threads: Open Last Summary Markdown** to open the generated `.threads/last-session.md` file.
 7. Use **Threads: Browse Snapshots** to view older snapshots from history.
-8. Watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
+8. If `threads.runtimeMode=remote`, watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 9. Optional: run **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` (great to paste into an AI assistant when you return later).
 10. Optional: run **Threads: Resume Where I Left Off** to reopen the exact files you touched last session (best-effort cursor + column restore, and reveals the anchor file in Explorer).
 11. Optional: do nothing for a few minutes after activity; auto-checkpoint should create a snapshot without opening any panels.
@@ -49,6 +50,9 @@ This will hit `/health` and `/session/start` with the current repo path.
 
 # Verify snapshot markdown files exist
 .\scripts\verify-snapshot-files.ps1 -WorkspacePath (Get-Location).Path
+
+# LLM formatting + redaction (run after npm run compile)
+node .\scripts\llm-format-test.js
 ```
 
 ## Optional: backend end-to-end script
@@ -58,9 +62,10 @@ This will hit `/health` and `/session/start` with the current repo path.
 This runs: `/health` -> `/session/start` -> `/events` -> `/session/end` -> snapshot history endpoints.
 
 ## Notes
-- `.vscode/settings.json` here pins `threads.backendUrl` to `http://localhost:8000` and shortens the flush interval for faster feedback.
+- `.vscode/settings.json` here pins `threads.remote.backendUrl` (and legacy `threads.backendUrl`) to `http://localhost:8000` and shortens the flush interval for faster feedback.
 - `threads.resumeMode` defaults to `quiet` (no popups) - use the Threads sidebar or status bar to resume.
 - If you see a `punycode` deprecation warning in the debug console, it is coming from a dependency and is safe to ignore.
 - `threads.autoCheckpoint.*` is set to short values in this workspace so you can verify interval/idle triggers quickly.
+- `threads.runtimeMode` defaults to `local` (no backend required). Switch to `remote` to test Supabase sync.
 - The sample files in `src/` cover multiple languages to exercise event payloads.
 - The markdown summary lives at `.threads/last-session.md` after you save a session - perfect to hand to Copilot/Cursor/Claude as context when reopening the project.

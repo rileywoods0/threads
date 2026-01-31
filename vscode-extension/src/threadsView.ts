@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import { promises as fs } from 'fs';
 
 type LastSessionState = {
@@ -60,6 +61,19 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
   }
 
+  private getDataDir(): string | null {
+    const rootPath = this.getRootPath();
+    if (!rootPath) return null;
+    const config = vscode.workspace.getConfiguration('threads');
+    const configured = config.get<string>('dataDir', '${workspaceFolder}/.threads');
+    const substituted = configured.replace('${workspaceFolder}', rootPath);
+    const expanded = substituted.startsWith('~') ? path.join(os.homedir(), substituted.slice(1)) : substituted;
+    if (path.isAbsolute(expanded)) {
+      return path.normalize(expanded);
+    }
+    return path.normalize(path.join(rootPath, expanded));
+  }
+
   private formatAge(savedAt?: string): string | null {
     if (!savedAt) return null;
     const ts = Date.parse(savedAt);
@@ -73,9 +87,9 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
   }
 
   private async readState(): Promise<LastSessionState | null> {
-    const rootPath = this.getRootPath();
-    if (!rootPath) return null;
-    const statePath = path.join(rootPath, '.threads', 'last-session-state.json');
+    const dataDir = this.getDataDir();
+    if (!dataDir) return null;
+    const statePath = path.join(dataDir, 'last-session-state.json');
     try {
       const raw = await fs.readFile(statePath, 'utf8');
       return JSON.parse(raw) as LastSessionState;
@@ -85,9 +99,9 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
   }
 
   private async getRecentSnapshotMarkdownNodes(limit: number): Promise<ThreadsNode[]> {
-    const rootPath = this.getRootPath();
-    if (!rootPath) return [];
-    const snapshotsDir = path.join(rootPath, '.threads', 'snapshots');
+    const dataDir = this.getDataDir();
+    if (!dataDir) return [];
+    const snapshotsDir = path.join(dataDir, 'snapshots');
 
     try {
       const entries = await fs.readdir(snapshotsDir);
@@ -160,12 +174,17 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       copyTip.iconPath = new vscode.ThemeIcon('copy');
       copyTip.command = { command: 'threads.copyForLLM', title: 'Copy for LLM' };
 
+      const llmTip = new ThreadsNode('firstRunInfo', 'Configure LLM');
+      llmTip.description = 'Optional: Ollama or BYO key';
+      llmTip.iconPath = new vscode.ThemeIcon('sparkle');
+      llmTip.command = { command: 'threads.configureLlm', title: 'Configure LLM' };
+
       const checkpointsTip = new ThreadsNode('firstRunInfo', 'Auto-checkpoints');
       checkpointsTip.description = 'Quiet snapshots while you work';
       checkpointsTip.iconPath = new vscode.ThemeIcon('history');
       checkpointsTip.command = { command: 'threads.diagnostics', title: 'Diagnostics' };
 
-      return [resumeTip, copyTip, checkpointsTip];
+      return [resumeTip, copyTip, llmTip, checkpointsTip];
     }
 
     if (element.nodeType === 'lastSession') {

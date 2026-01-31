@@ -3,16 +3,18 @@
 This checklist is designed to confirm Threads end-to-end behavior with minimal guesswork.
 
 ## 0) Setup
-- Backend is running: `uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`
-- Supabase schema applied: `backend/supabase_schema.sql`
-- `.env` exists in repo root and is loaded by backend.
+- If testing remote mode: backend is running: `uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000`
+- If testing remote mode: Supabase schema applied: `backend/supabase_schema.sql`
+- If testing remote mode: `.env` exists in repo root and is loaded by backend.
 - Extension compiled: from `vscode-extension/`, run `npm run compile`
 - Launch Extension Development Host (EDH): open `vscode-extension/` -> `F5`
 - In EDH, open the `testing/` folder as the workspace.
 - Optional: set `threads.resume.longBreakHours` in `testing/.vscode/settings.json` for faster long-break tests.
+- Optional: set `threads.runtimeMode` to `local` or `remote` depending on which flow you want to validate.
 
 ## 1) Health + connectivity
-- Run **Threads: Check Backend Health** -> should show `ok`.
+- If `threads.runtimeMode=remote`: run **Threads: Check Backend Health** -> should show `ok`.
+- If `threads.runtimeMode=local`: **Threads: Check Backend Health** should say backend not required.
 - Open **Output** panel -> select `Threads` output channel -> confirm logs show activation and event flushes.
 - Click the status bar `Threads: In session` -> snapshot panel should open.
 
@@ -66,7 +68,7 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 ## 6b) Copy for LLM (snapshot panel CTA)
 - Open **Threads: Show Last State** and click **Copy for LLM**
   - Try **Compact (recommended)**: confirm it contains goal, anchor, recent actions, next steps, and open questions.
-  - Try **Debug-focused**: confirm it includes backend URL + snapshot/session ids (no secrets).
+  - Try **Debug-focused**: confirm it includes runtime mode + last error (if any) without secrets.
   - Try **Deep context**: confirm it includes a small recent snapshot history block.
 
 ## 6c) Redaction settings
@@ -85,7 +87,7 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 
 ## 7) Diagnostics
 - Run **Threads: Diagnostics**
-  - Confirm it shows: backendUrl, sessionId, pending events, last flush time, last snapshot time/id, last backend error.
+  - Confirm it shows: runtime mode, data path, backend URL (if remote), LLM status, pending events, last snapshot time/id, last backend error.
 
 ## 8) Backend script smoke test (optional)
 From repo root:
@@ -96,4 +98,4 @@ From repo root:
 ## If something fails
 - Check `Threads` Output channel (VS Code Output panel).
 - Check backend terminal logs for Supabase errors.
-- Confirm `threads.backendUrl` in `testing/.vscode/settings.json`.
+- Confirm `threads.remote.backendUrl` (or legacy `threads.backendUrl`) in `testing/.vscode/settings.json`.

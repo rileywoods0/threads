@@ -8,6 +8,7 @@ export type ThreadsSnapshot = {
   next_steps?: string[];
   decisions?: string[];
   summary_text?: string | null;
+  confidence_tag?: string | null;
 };
 
 export type ThreadsPanelMeta = {
@@ -147,6 +148,7 @@ export class ThreadsPanel {
           <section class="card accent">
             <div class="header">Current Goal</div>
             <p>${escapeHtml(snapshot.current_goal || 'Not set')}</p>
+            ${snapshot.confidence_tag ? `<p class="muted">Confidence: ${escapeHtml(snapshot.confidence_tag)}</p>` : ''}
           </section>
           <section class="card">
             <div class="header">Completed Work</div>

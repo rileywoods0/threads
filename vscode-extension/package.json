@@ -21,6 +21,10 @@
     "onCommand:threads.copyForLLM",
     "onCommand:threads.openAnchorFile",
     "onCommand:threads.runLastTask",
+    "onCommand:threads.configureLlm",
+    "onCommand:threads.testLlmConnection",
+    "onCommand:threads.openDataFolder",
+    "onCommand:threads.deleteLocalData",
     "onCommand:threads.sendFeedback",
     "onView:threads.view"
   ],
@@ -88,6 +92,22 @@
         "title": "Threads: Run Last Task"
       },
       {
+        "command": "threads.configureLlm",
+        "title": "Threads: Configure LLM"
+      },
+      {
+        "command": "threads.testLlmConnection",
+        "title": "Threads: Test LLM Connection"
+      },
+      {
+        "command": "threads.openDataFolder",
+        "title": "Threads: Open Data Folder"
+      },
+      {
+        "command": "threads.deleteLocalData",
+        "title": "Threads: Delete Local Data"
+      },
+      {
         "command": "threads.sendFeedback",
         "title": "Threads: Send Feedback"
       }
@@ -113,10 +133,26 @@
       "type": "object",
       "title": "Threads",
       "properties": {
+        "threads.runtimeMode": {
+          "type": "string",
+          "enum": ["local", "remote"],
+          "default": "local",
+          "description": "Local-only mode stores data on disk and requires no backend. Remote mode syncs with the backend."
+        },
+        "threads.dataDir": {
+          "type": "string",
+          "default": "${workspaceFolder}/.threads",
+          "description": "Local data folder for Threads (snapshots, exports, state)."
+        },
+        "threads.remote.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Backend URL used when threads.runtimeMode = remote."
+        },
         "threads.backendUrl": {
           "type": "string",
           "default": "http://localhost:8000",
-          "description": "Base URL for the Threads backend API"
+          "description": "Deprecated: use threads.remote.backendUrl instead."
         },
         "threads.eventFlushIntervalMs": {
           "type": "number",
@@ -211,6 +247,37 @@
           "type": "boolean",
           "default": true,
           "description": "Include debug/run signals (best-effort) in exports."
+        },
+        "threads.llm.provider": {
+          "type": "string",
+          "enum": ["none", "ollama", "openai"],
+          "default": "none",
+          "description": "LLM provider for enhanced summaries and handoff generation."
+        },
+        "threads.llm.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL for the local Ollama server."
+        },
+        "threads.llm.ollamaModel": {
+          "type": "string",
+          "default": "llama3.1",
+          "description": "Ollama model name to use."
+        },
+        "threads.llm.openaiModel": {
+          "type": "string",
+          "default": "gpt-5.2-mini",
+          "description": "OpenAI model name (change if unavailable)."
+        },
+        "threads.llm.openaiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional OpenAI base URL for proxies."
+        },
+        "threads.llm.includeCodeSnippets": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include short code snippets in LLM handoffs (opt-in only)."
         },
         "threads.feedback.githubRepo": {
           "type": "string",

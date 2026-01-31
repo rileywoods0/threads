@@ -4,28 +4,26 @@ import { promises as fs } from 'fs';
 import * as vscode from 'vscode';
 import { ThreadsPanel, ThreadsPanelMeta, ThreadsSnapshot } from './panel';
 import { ThreadsViewProvider } from './threadsView';
-
-type EventPayload = {
-  event_type: string;
-  timestamp?: string;
-  data: Record<string, unknown>;
-};
-
-type SnapshotListItem = {
-  id: string;
-  session_id: string;
-  created_at: string;
-  current_goal?: string | null;
-  summary_text?: string | null;
-};
+import { buildHandoffText } from './llm/formatting';
+import { LlmProvider, LlmSummaryOutput } from './llm/types';
+import { OllamaProvider } from './llm/ollamaProvider';
+import { OpenAIProvider } from './llm/openaiProvider';
+import { formatPathForExport } from './utils/paths';
+import { LocalStorageAdapter } from './storage/localStorage';
+import { RemoteStorageAdapter } from './storage/remoteStorage';
+import { EventPayload, SnapshotListItem, StorageAdapter } from './storage/types';
 
 type CursorPosition = { line: number; character: number };
 type SelectionState = { anchor: CursorPosition; active: CursorPosition };
 type StoredSelection = SelectionState | CursorPosition;
+type HandoffMode = 'compact' | 'debug' | 'deep';
 
 let sessionId: string | null = null;
 let projectId: string | null = null;
 let workspaceRoot: string | null = null;
+let storageAdapter: StorageAdapter | null = null;
+let dataDir: string | null = null;
+let runtimeMode: 'local' | 'remote' = 'local';
 let pendingEvents: EventPayload[] = [];
 let flushTimer: NodeJS.Timeout | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
@@ -42,10 +40,15 @@ let lastActivityAtMs = Date.now();
 let eventsSinceSnapshot = 0;
 let meaningfulScoreSinceSnapshot = 0;
 let checkpointSignalsSinceSnapshot = 0;
+let eventCountsSinceSnapshot = new Map<string, number>();
 let lastFlushAtMs: number | null = null;
 let lastSnapshotAtMs: number | null = null;
 let lastSnapshotId: string | null = null;
 let lastBackendError: string | null = null;
+let lastSummarySource: 'heuristic' | 'llm' = 'heuristic';
+let lastLlmTestStatus: string | null = null;
+let lastLlmProvider: string | null = null;
+let lastLlmSummaryAtMs: number | null = null;
 let checkpointTimer: NodeJS.Timeout | undefined;
 let gitBranchName: string | null = null;
 let gitHeadPath: string | null = null;
@@ -58,7 +61,9 @@ let editEventsSinceSnapshot = 0;
 let lastFrictionEmittedAtMs = 0;
 let lastLoadedSnapshot: ThreadsSnapshot | null = null;
 let lastTaskRun: { name: string; taskId?: string | null } | null = null;
+let lastDebugSession: { name: string; startedAt?: string; endedAt?: string } | null = null;
 let openEditorsOrdered: Array<{ filePath: string; viewColumn?: number }> = [];
+let sessionStartedAtMs: number | null = null;
 let smartResume = {
   eligible: false,
   deadlineMs: 0,
@@ -75,8 +80,16 @@ function getConfig() {
   const longBreakHours = config.get<number>('resume.longBreakHours', 8);
   const minMeaningfulScore = config.get<number>('autoCheckpoint.minMeaningfulScore', 15);
   const deprecatedMinEvents = config.get<number>('autoCheckpoint.minEvents', 20);
+  const runtimeModeSetting = config.get<'local' | 'remote'>('runtimeMode', 'local');
+  const dataDirSetting = config.get<string>('dataDir', '${workspaceFolder}/.threads');
+  const legacyBackendUrl = config.get<string>('backendUrl', 'http://localhost:8000');
+  const remoteBackendUrl = config.get<string>('remote.backendUrl', legacyBackendUrl);
   return {
-    backendUrl: config.get<string>('backendUrl', 'http://localhost:8000'),
+    runtimeMode: runtimeModeSetting,
+    dataDir: dataDirSetting,
+    remote: {
+      backendUrl: remoteBackendUrl
+    },
     flushIntervalMs: config.get<number>('eventFlushIntervalMs', 5000),
     resumeMode,
     longBreakHours,
@@ -99,10 +112,166 @@ function getConfig() {
       includeTaskHistory: config.get<boolean>('export.includeTaskHistory', true),
       includeDebugSummary: config.get<boolean>('export.includeDebugSummary', true)
     },
+    llm: {
+      provider: config.get<'none' | 'ollama' | 'openai'>('llm.provider', 'none'),
+      includeCodeSnippets: config.get<boolean>('llm.includeCodeSnippets', false),
+      ollamaUrl: config.get<string>('llm.ollamaUrl', 'http://localhost:11434'),
+      ollamaModel: config.get<string>('llm.ollamaModel', 'llama3.1'),
+      openaiModel: config.get<string>('llm.openaiModel', 'gpt-5.2-mini'),
+      openaiBaseUrl: config.get<string>('llm.openaiBaseUrl', '')
+    },
     feedback: {
       githubRepo: config.get<string>('feedback.githubRepo', '')
     }
   };
+}
+
+function resolveDataDir(rootPath: string, configured: string): string {
+  const substituted = configured.replace('${workspaceFolder}', rootPath);
+  const expanded = substituted.startsWith('~')
+    ? path.join(os.homedir(), substituted.slice(1))
+    : substituted;
+  if (path.isAbsolute(expanded)) {
+    return path.normalize(expanded);
+  }
+  return path.normalize(path.join(rootPath, expanded));
+}
+
+function applyDataDir(rootPath: string) {
+  const { dataDir: configured } = getConfig();
+  dataDir = resolveDataDir(rootPath, configured);
+  summaryFilePath = path.join(dataDir, 'last-session.md');
+  stateFilePath = path.join(dataDir, 'last-session-state.json');
+  toastStampPath = path.join(dataDir, 'toast-stamps.json');
+}
+
+function ensureStorageAdapter(rootPath: string): StorageAdapter {
+  const { runtimeMode: mode, remote } = getConfig();
+  runtimeMode = mode;
+  if (!dataDir) {
+    applyDataDir(rootPath);
+  }
+  if (mode === 'remote') {
+    storageAdapter = new RemoteStorageAdapter(remote.backendUrl);
+  } else {
+    storageAdapter = new LocalStorageAdapter(dataDir ?? path.join(rootPath, '.threads'));
+  }
+  return storageAdapter;
+}
+
+async function getLlmProvider(): Promise<LlmProvider | null> {
+  const { llm } = getConfig();
+  if (llm.provider === 'none') {
+    lastLlmProvider = null;
+    return null;
+  }
+  if (llm.provider === 'ollama') {
+    lastLlmProvider = 'ollama';
+    return new OllamaProvider(llm.ollamaUrl, llm.ollamaModel);
+  }
+  if (llm.provider === 'openai') {
+    const apiKey = await extensionContext?.secrets.get('threads.openaiApiKey');
+    if (!apiKey) {
+      lastLlmProvider = 'openai';
+      return null;
+    }
+    lastLlmProvider = 'openai';
+    return new OpenAIProvider(apiKey, llm.openaiModel, llm.openaiBaseUrl || undefined);
+  }
+  return null;
+}
+
+function buildSummaryTextFromFields(snapshot: ThreadsSnapshot): string {
+  const lines: string[] = [];
+  if (snapshot.current_goal) {
+    lines.push(`Current goal: ${snapshot.current_goal}`);
+  }
+  if (snapshot.completed_work?.length) {
+    lines.push(`Completed: ${snapshot.completed_work.join(' ')}`);
+  }
+  if (snapshot.open_issues?.length) {
+    lines.push(`Open issues: ${snapshot.open_issues.join(' ')}`);
+  }
+  if (snapshot.next_steps?.length) {
+    lines.push(`Next step: ${snapshot.next_steps[0]}`);
+  }
+  if (snapshot.decisions?.length) {
+    lines.push(`Decision: ${snapshot.decisions[0]}`);
+  }
+  if ((snapshot as any).confidence_tag) {
+    lines.push(`Confidence: ${(snapshot as any).confidence_tag}`);
+  }
+  return lines.join('\n');
+}
+
+function buildLlmSummaryInput(snapshot: ThreadsSnapshot, state: LastSessionState | null) {
+  const files = (state?.files ?? []).map((file) => path.basename(file)).slice(0, 10);
+  const anchor = getAnchorFileFromState(state);
+  const anchorLabel = anchor ? path.basename(anchor) : undefined;
+  const eventCounts: Record<string, number> = {};
+  for (const [key, value] of eventCountsSinceSnapshot.entries()) {
+    eventCounts[key] = value;
+  }
+  const durationMinutes = sessionStartedAtMs ? Math.round((Date.now() - sessionStartedAtMs) / 60000) : undefined;
+  return {
+    goal: snapshot.current_goal ?? state?.currentGoal,
+    anchor: anchorLabel,
+    files,
+    recentActions: snapshot.completed_work ?? [],
+    openIssues: snapshot.open_issues ?? [],
+    nextSteps: snapshot.next_steps ?? [],
+    decisions: snapshot.decisions ?? [],
+    lastTask: state?.lastTask?.name,
+    lastError: lastBackendError ?? undefined,
+    lastCheckpointAt: lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toISOString() : undefined,
+    eventCounts,
+    durationMinutes
+  };
+}
+
+async function maybeEnhanceSnapshotWithLlm(snapshot: ThreadsSnapshot): Promise<ThreadsSnapshot> {
+  const provider = await getLlmProvider();
+  if (!provider || !provider.isConfigured()) {
+    lastSummarySource = 'heuristic';
+    return snapshot;
+  }
+  try {
+    const state = await readLastSessionState();
+    const summary = (await provider.summarize(buildLlmSummaryInput(snapshot, state))) as LlmSummaryOutput;
+    const enhanced: ThreadsSnapshot = {
+      ...snapshot,
+      current_goal: summary.current_goal ?? snapshot.current_goal,
+      completed_work: summary.completed_work ?? snapshot.completed_work,
+      open_issues: summary.open_issues ?? snapshot.open_issues,
+      next_steps: summary.next_steps ?? snapshot.next_steps,
+      decisions: summary.decisions ?? snapshot.decisions,
+      summary_text: buildSummaryTextFromFields({ ...snapshot, ...summary } as ThreadsSnapshot),
+      confidence_tag: summary.confidence_tag ?? (snapshot as any).confidence_tag
+    };
+    lastSummarySource = 'llm';
+    lastLlmSummaryAtMs = Date.now();
+    if (storageAdapter?.updateSnapshot && enhanced.id) {
+      await storageAdapter.updateSnapshot(enhanced.id, enhanced as Record<string, unknown>);
+    }
+    return enhanced;
+  } catch (err) {
+    lastSummarySource = 'heuristic';
+    logError('Threads: LLM summary failed', err);
+    return snapshot;
+  }
+}
+
+async function buildAgentHandoffText(input: Parameters<typeof buildHandoffText>[0]): Promise<string> {
+  const provider = await getLlmProvider();
+  if (!provider || !provider.isConfigured()) {
+    return buildHandoffText(input);
+  }
+  try {
+    return await provider.buildAgentHandoff(input);
+  } catch (err) {
+    logError('Threads: LLM handoff generation failed', err);
+    return buildHandoffText(input);
+  }
 }
 
 function getOutputChannel(): vscode.OutputChannel {
@@ -140,6 +309,12 @@ function normalizePath(filePath: string): string {
 
 function shouldIgnoreFile(filePath: string): boolean {
   const normalized = normalizePath(filePath).toLowerCase();
+  if (dataDir) {
+    const normalizedDataDir = normalizePath(dataDir).toLowerCase();
+    if (normalized.startsWith(normalizedDataDir)) {
+      return true;
+    }
+  }
   const ignoredSegments = [
     `${path.sep}.threads${path.sep}`,
     `${path.sep}.git${path.sep}`,
@@ -246,6 +421,7 @@ function queueEvent(event_type: string, data: Record<string, unknown>) {
   if (['EDIT', 'EXECUTION', 'STATE_CHANGE', 'INTENT'].includes(scored.category)) {
     checkpointSignalsSinceSnapshot += 1;
   }
+  eventCountsSinceSnapshot.set(normalizedType, (eventCountsSinceSnapshot.get(normalizedType) ?? 0) + 1);
   if (normalizedType === 'file.save') {
     editEventsSinceSnapshot += 1;
     if (smartResume.eligible) {
@@ -322,9 +498,7 @@ async function startSession(context: vscode.ExtensionContext) {
   }
 
   workspaceRoot = rootPath;
-  summaryFilePath = path.join(rootPath, '.threads', 'last-session.md');
-  stateFilePath = path.join(rootPath, '.threads', 'last-session-state.json');
-  toastStampPath = path.join(rootPath, '.threads', 'toast-stamps.json');
+  applyDataDir(rootPath);
   gitHeadPath = path.join(rootPath, '.git', 'HEAD');
   lastGitHeadValue = null;
   touchedFiles = new Set<string>();
@@ -335,28 +509,29 @@ async function startSession(context: vscode.ExtensionContext) {
   eventsSinceSnapshot = 0;
   meaningfulScoreSinceSnapshot = 0;
   checkpointSignalsSinceSnapshot = 0;
+  eventCountsSinceSnapshot = new Map<string, number>();
   editEventsSinceSnapshot = 0;
   focusTimestamps = [];
   lastSnapshotAtMs = Date.now();
+  sessionStartedAtMs = Date.now();
   lastSnapshotId = null;
+  lastDebugSession = null;
+  lastSummarySource = 'heuristic';
+  lastLlmSummaryAtMs = null;
   const projectName = path.basename(rootPath);
-  const { backendUrl } = getConfig();
+  const adapter = ensureStorageAdapter(rootPath);
 
   try {
-    const payload = await fetchJson<{ session_id: string; project_id: string }>(`${backendUrl}/session/start`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ root_path: rootPath, project_name: projectName })
-    });
+    const payload = await adapter.startSession(rootPath, projectName);
 
-    sessionId = payload.session_id;
-    projectId = payload.project_id;
+    sessionId = payload.sessionId;
+    projectId = payload.projectId ?? null;
     context.workspaceState.update('threads.sessionId', sessionId);
     logInfo(`Threads: Started session ${sessionId} for ${rootPath}`);
     ensureStatusBarItem(context);
   } catch (err) {
     logError('Threads: Failed to start session', err);
-    vscode.window.showErrorMessage('Threads failed to start session. Check backend connectivity.');
+    vscode.window.showErrorMessage('Threads failed to start session. Check storage configuration.');
   }
 }
 
@@ -365,21 +540,20 @@ async function flushEvents() {
     return;
   }
 
-  const { backendUrl } = getConfig();
   const eventsToSend = [...pendingEvents];
   pendingEvents = [];
 
   try {
-    await fetchJson(`${backendUrl}/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, events: eventsToSend })
-    });
+    const adapter = storageAdapter ?? (workspaceRoot ? ensureStorageAdapter(workspaceRoot) : null);
+    if (!adapter) {
+      throw new Error('Storage adapter not available');
+    }
+    await adapter.flushEvents(sessionId, eventsToSend);
     logInfo(`Threads: Flushed ${eventsToSend.length} events.`);
     lastFlushAtMs = Date.now();
   } catch (err) {
     logError('Threads: Failed to flush events', err);
-    vscode.window.showErrorMessage('Threads: Failed to send events to backend.');
+    vscode.window.showErrorMessage('Threads: Failed to flush events. Check storage configuration.');
     pendingEvents.unshift(...eventsToSend);
   }
 }
@@ -389,15 +563,15 @@ async function endSession(showNotification = false, showPanel = true): Promise<T
     return null;
   }
 
-  const { backendUrl } = getConfig();
   await flushEvents();
 
   try {
-    const snapshot = await fetchJson<ThreadsSnapshot>(`${backendUrl}/session/end`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId })
-    });
+    const adapter = storageAdapter ?? (workspaceRoot ? ensureStorageAdapter(workspaceRoot) : null);
+    if (!adapter) {
+      throw new Error('Storage adapter not available');
+    }
+    let snapshot = (await adapter.endSession(sessionId)) as ThreadsSnapshot;
+    snapshot = await maybeEnhanceSnapshotWithLlm(snapshot);
 
     lastLoadedSnapshot = snapshot;
     await persistLatestSnapshotMarkdown(snapshot);
@@ -421,6 +595,7 @@ async function endSession(showNotification = false, showPanel = true): Promise<T
     eventsSinceSnapshot = 0;
     meaningfulScoreSinceSnapshot = 0;
     checkpointSignalsSinceSnapshot = 0;
+    eventCountsSinceSnapshot = new Map<string, number>();
     editEventsSinceSnapshot = 0;
     focusTimestamps = [];
     lastSnapshotAtMs = Date.now();
@@ -428,13 +603,13 @@ async function endSession(showNotification = false, showPanel = true): Promise<T
     return snapshot;
   } catch (err) {
     logError('Threads: Failed to end session', err);
-    vscode.window.showErrorMessage('Threads: Failed to end session. Check backend logs for details.');
+    vscode.window.showErrorMessage('Threads: Failed to end session. Check storage logs for details.');
     return null;
   }
 }
 
 async function createCheckpoint(reason: string, options?: { force?: boolean }) {
-  const { backendUrl, autoCheckpoint } = getConfig();
+  const { autoCheckpoint } = getConfig();
   if (!sessionId) {
     return;
   }
@@ -457,11 +632,12 @@ async function createCheckpoint(reason: string, options?: { force?: boolean }) {
   await flushEvents();
 
   try {
-    const snapshot = await fetchJson<ThreadsSnapshot>(`${backendUrl}/snapshot/create`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, reason })
-    });
+    const adapter = storageAdapter ?? (workspaceRoot ? ensureStorageAdapter(workspaceRoot) : null);
+    if (!adapter) {
+      throw new Error('Storage adapter not available');
+    }
+    let snapshot = (await adapter.createCheckpoint(sessionId, reason)) as ThreadsSnapshot;
+    snapshot = await maybeEnhanceSnapshotWithLlm(snapshot);
 
     lastLoadedSnapshot = snapshot;
     await persistLatestSnapshotMarkdown(snapshot);
@@ -474,6 +650,7 @@ async function createCheckpoint(reason: string, options?: { force?: boolean }) {
     eventsSinceSnapshot = 0;
     meaningfulScoreSinceSnapshot = 0;
     checkpointSignalsSinceSnapshot = 0;
+    eventCountsSinceSnapshot = new Map<string, number>();
     editEventsSinceSnapshot = 0;
     focusTimestamps = [];
     lastSnapshotAtMs = Date.now();
@@ -488,16 +665,9 @@ async function createCheckpoint(reason: string, options?: { force?: boolean }) {
 }
 
 async function fetchLatestSnapshot(rootPath: string): Promise<ThreadsSnapshot | null> {
-  const { backendUrl } = getConfig();
-  const response = await fetch(`${backendUrl}/project/latest_snapshot?root_path=${encodeURIComponent(rootPath)}`);
-  if (response.status === 404) {
-    return null;
-  }
-  if (!response.ok) {
-    throw new Error(`status ${response.status}`);
-  }
-  const payload = (await response.json()) as { snapshot: ThreadsSnapshot };
-  return payload.snapshot;
+  const adapter = storageAdapter ?? ensureStorageAdapter(rootPath);
+  const snapshot = await adapter.fetchLatestSnapshot(rootPath);
+  return snapshot as ThreadsSnapshot | null;
 }
 
 async function showLatestSnapshot() {
@@ -560,6 +730,7 @@ type LastSessionState = {
   activeFile?: string;
   cursors?: Record<string, StoredSelection>;
   lastTask?: { name: string; taskId?: string | null };
+  lastDebug?: { name: string; startedAt?: string; endedAt?: string };
 };
 
 function formatSnapshotMarkdown(snapshot: ThreadsSnapshot): string {
@@ -586,6 +757,12 @@ function formatSnapshotMarkdown(snapshot: ThreadsSnapshot): string {
   renderList('Open Issues', snapshot.open_issues);
   renderList('Next Steps', snapshot.next_steps);
   renderList('Decisions', snapshot.decisions);
+
+  if ((snapshot as any).confidence_tag) {
+    lines.push('## Confidence');
+    lines.push(String((snapshot as any).confidence_tag));
+    lines.push('');
+  }
 
   lines.push('## Summary');
   lines.push(snapshot.summary_text || 'No summary.');
@@ -657,18 +834,19 @@ async function persistLastSessionState(snapshot: ThreadsSnapshot) {
     }
   }
 
-  const state: LastSessionState = {
-    savedAt: new Date().toISOString(),
-    snapshotId,
-    currentGoal: snapshot.current_goal ?? undefined,
-    nextSteps: snapshot.next_steps ?? undefined,
-    files: combined.slice(0, 50),
-    openFiles: openFiles.slice(0, 25),
-    openEditors: openEditors.slice(0, 25),
-    activeFile: activeFilePath ?? undefined,
-    cursors,
-    lastTask: lastTaskRun ?? undefined
-  };
+    const state: LastSessionState = {
+      savedAt: new Date().toISOString(),
+      snapshotId,
+      currentGoal: snapshot.current_goal ?? undefined,
+      nextSteps: snapshot.next_steps ?? undefined,
+      files: combined.slice(0, 50),
+      openFiles: openFiles.slice(0, 25),
+      openEditors: openEditors.slice(0, 25),
+      activeFile: activeFilePath ?? undefined,
+      cursors,
+      lastTask: lastTaskRun ?? undefined,
+      lastDebug: lastDebugSession ?? undefined
+    };
 
   try {
     await fs.mkdir(path.dirname(stateFilePath), { recursive: true });
@@ -733,6 +911,27 @@ function buildPanelMeta(snapshot: ThreadsSnapshot, state: LastSessionState | nul
   };
 }
 
+function formatAnchorForHandoff(
+  state: LastSessionState | null,
+  options: { includeFilePaths: boolean; redactHomeDir: boolean }
+): string | null {
+  const anchor = getAnchorFileFromState(state);
+  if (!anchor) {
+    return null;
+  }
+  const selection = normalizeSelectionState(state?.cursors?.[anchor]);
+  const line = selection ? selection.active.line + 1 : null;
+  const col = selection ? selection.active.character + 1 : null;
+  const formatted = formatPathForExport(anchor, options);
+  if (line && col) {
+    return `${formatted}:${line}:${col}`;
+  }
+  if (line) {
+    return `${formatted}:${line}`;
+  }
+  return formatted;
+}
+
 async function writeSnapshotMarkdown(targetPath: string, snapshot: ThreadsSnapshot) {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.writeFile(targetPath, formatSnapshotMarkdown(snapshot), 'utf8');
@@ -750,14 +949,14 @@ async function persistLatestSnapshotMarkdown(snapshot: ThreadsSnapshot) {
 }
 
 async function persistSnapshotArchiveMarkdown(snapshot: ThreadsSnapshot) {
-  if (!workspaceRoot) {
+  if (!dataDir) {
     return;
   }
   const snapshotId = getSnapshotId(snapshot);
   if (!snapshotId) {
     return;
   }
-  const archivePath = path.join(workspaceRoot, '.threads', 'snapshots', `${snapshotId}.md`);
+  const archivePath = path.join(dataDir, 'snapshots', `${snapshotId}.md`);
   try {
     await writeSnapshotMarkdown(archivePath, snapshot);
   } catch (err) {
@@ -784,7 +983,7 @@ async function openOrCreateSummaryFile() {
       await persistLatestSnapshotMarkdown(snapshot);
     } catch (err) {
       logError('Threads: Unable to create summary file from latest snapshot', err);
-      vscode.window.showErrorMessage('Threads: Unable to create summary file. Is the backend running?');
+      vscode.window.showErrorMessage('Threads: Unable to create summary file. Check storage configuration.');
       return;
     }
   }
@@ -913,18 +1112,16 @@ async function browseSnapshots() {
     return;
   }
 
-  const { backendUrl } = getConfig();
   try {
-    const list = await fetchJson<{ snapshots: SnapshotListItem[] }>(
-      `${backendUrl}/project/snapshots?root_path=${encodeURIComponent(rootPath)}&limit=30`
-    );
-    if (!list.snapshots.length) {
+    const adapter = storageAdapter ?? ensureStorageAdapter(rootPath);
+    const list = await adapter.listSnapshots(rootPath, 30);
+    if (!list.length) {
       vscode.window.showInformationMessage('Threads: No snapshots available yet.');
       return;
     }
 
     const picked = await vscode.window.showQuickPick(
-      list.snapshots.map((s) => {
+      list.map((s) => {
         const when = new Date(s.created_at).toLocaleString();
         const goal = (s.current_goal || '').trim();
         const summary = (s.summary_text || '').trim();
@@ -942,8 +1139,9 @@ async function browseSnapshots() {
       return;
     }
 
-    const snapshot = await fetchJson<ThreadsSnapshot>(`${backendUrl}/snapshot/${encodeURIComponent(picked.snapshotId)}`);
-    const archivePath = path.join(rootPath, '.threads', 'snapshots', `${picked.snapshotId}.md`);
+    const snapshot = (await adapter.getSnapshot(picked.snapshotId)) as ThreadsSnapshot;
+    const archiveRoot = dataDir ?? path.join(rootPath, '.threads');
+    const archivePath = path.join(archiveRoot, 'snapshots', `${picked.snapshotId}.md`);
     try {
       await writeSnapshotMarkdown(archivePath, snapshot);
     } catch (err) {
@@ -965,12 +1163,17 @@ async function browseSnapshots() {
     ThreadsPanel.render(snapshot, buildPanelMeta(snapshot, state));
   } catch (err) {
     logError('Threads: Unable to browse snapshots', err);
-    vscode.window.showErrorMessage('Threads: Unable to browse snapshots. Is the backend running?');
+    vscode.window.showErrorMessage('Threads: Unable to browse snapshots. Check storage configuration.');
   }
 }
 
 async function checkBackendHealth() {
-  const { backendUrl } = getConfig();
+  const { runtimeMode: mode, remote } = getConfig();
+  if (mode === 'local') {
+    vscode.window.showInformationMessage('Threads is running in local mode. No backend required.');
+    return;
+  }
+  const backendUrl = remote.backendUrl;
   try {
     const payload = await fetchJson<{ status: string }>(`${backendUrl}/health`);
     vscode.window.showInformationMessage(`Threads backend: ${payload.status}`);
@@ -987,8 +1190,9 @@ async function exportContextBundle() {
     return;
   }
 
-  const { backendUrl, export: exportCfg } = getConfig();
-  const bundlePath = path.join(rootPath, '.threads', 'context-bundle.md');
+  const { export: exportCfg } = getConfig();
+  const bundleRoot = dataDir ?? path.join(rootPath, '.threads');
+  const bundlePath = path.join(bundleRoot, 'context-bundle.md');
 
   let lastSessionMarkdown = '';
   if (summaryFilePath) {
@@ -1012,10 +1216,8 @@ async function exportContextBundle() {
 
   let snapshots: SnapshotListItem[] = [];
   try {
-    const list = await fetchJson<{ snapshots: SnapshotListItem[] }>(
-      `${backendUrl}/project/snapshots?root_path=${encodeURIComponent(rootPath)}&limit=10`
-    );
-    snapshots = list.snapshots;
+    const adapter = storageAdapter ?? ensureStorageAdapter(rootPath);
+    snapshots = await adapter.listSnapshots(rootPath, 10);
   } catch (err) {
     logError('Threads: Unable to fetch snapshot list for context bundle', err);
   }
@@ -1379,34 +1581,47 @@ async function runLastTask() {
   await vscode.tasks.executeTask(picked.task);
 }
 
-function redactHomeDir(value: string, enabled: boolean): string {
-  if (!enabled) {
-    return value;
+async function buildAnchorSnippet(state: LastSessionState | null): Promise<string[] | null> {
+  const { llm } = getConfig();
+  if (!llm.includeCodeSnippets) {
+    return null;
   }
-  const home = os.homedir();
-  if (!home) {
-    return value;
+  const anchor = getAnchorFileFromState(state);
+  if (!anchor) {
+    return null;
   }
-
-  const normalizedValue = value.replace(/\//g, path.sep);
-  const normalizedHome = home.replace(/\//g, path.sep);
-
-  const startsWithHome =
-    process.platform === 'win32'
-      ? normalizedValue.toLowerCase().startsWith(normalizedHome.toLowerCase())
-      : normalizedValue.startsWith(normalizedHome);
-
-  if (!startsWithHome) {
-    return value;
+  const selection = normalizeSelectionState(state?.cursors?.[anchor]);
+  if (!selection) {
+    return null;
   }
-
-  const remainder = normalizedValue.slice(normalizedHome.length);
-  return `~${remainder}`;
+  try {
+    const content = await fs.readFile(anchor, 'utf8');
+    const lines = content.split(/\r?\n/);
+    const center = Math.max(0, Math.min(lines.length - 1, selection.active.line));
+    const start = Math.max(0, center - 2);
+    const end = Math.min(lines.length, center + 3);
+    const snippetLines = lines.slice(start, end).map((line, idx) => `${start + idx + 1}: ${line}`);
+    return [`${path.basename(anchor)}:${center + 1}`, ...snippetLines];
+  } catch {
+    return null;
+  }
 }
 
-function formatPathForExport(filePath: string, options: { includeFilePaths: boolean; redactHomeDir: boolean }): string {
-  const maybeRedacted = redactHomeDir(filePath, options.redactHomeDir);
-  return options.includeFilePaths ? maybeRedacted : path.basename(maybeRedacted);
+async function writeHandoffExport(contents: string): Promise<string | null> {
+  if (!dataDir) {
+    return null;
+  }
+  try {
+    const exportsDir = path.join(dataDir, 'exports');
+    await fs.mkdir(exportsDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const target = path.join(exportsDir, `context-handoff-${stamp}.md`);
+    await fs.writeFile(target, contents, 'utf8');
+    return target;
+  } catch (err) {
+    logError('Threads: Failed to write handoff export', err);
+    return null;
+  }
 }
 
 async function copyForLLM() {
@@ -1416,19 +1631,20 @@ async function copyForLLM() {
     return;
   }
 
-  const mode = await vscode.window.showQuickPick(
-    [
-      { label: 'Compact', description: 'Default (<300 lines)', mode: 'compact' },
-      { label: 'Debug-focused', description: 'Includes runtime state + last errors', mode: 'debug' },
-      { label: 'Deep context', description: 'Adds recent snapshot history', mode: 'deep' }
-    ],
-    { title: 'Copy for LLM', placeHolder: 'Choose a format (Compact is default)' }
-  );
+  const modeItems: Array<vscode.QuickPickItem & { mode: HandoffMode }> = [
+    { label: 'Compact', description: 'Default (<300 lines)', mode: 'compact' },
+    { label: 'Debug-focused', description: 'Includes runtime state + last errors', mode: 'debug' },
+    { label: 'Deep context', description: 'Adds recent snapshot history', mode: 'deep' }
+  ];
+  const mode = await vscode.window.showQuickPick(modeItems, {
+    title: 'Copy for LLM',
+    placeHolder: 'Choose a format (Compact is default)'
+  });
   if (!mode) {
     return;
   }
 
-  const { backendUrl, export: exportCfg } = getConfig();
+  const { export: exportCfg } = getConfig();
   const state = await readLastSessionState();
   const snapshot = lastLoadedSnapshot ?? (await fetchLatestSnapshot(rootPath));
   if (!snapshot) {
@@ -1436,117 +1652,206 @@ async function copyForLLM() {
     return;
   }
 
-  const anchor = getAnchorFileFromState(state);
-  const redactHomeDir = true;
+  const anchorFormatted = formatAnchorForHandoff(state, {
+    includeFilePaths: exportCfg.includeFilePaths,
+    redactHomeDir: true
+  });
   const fileLimit = mode.mode === 'compact' ? Math.min(exportCfg.maxFiles, 6) : exportCfg.maxFiles;
   const files = Array.from(new Set(state?.files ?? [])).slice(0, fileLimit);
   const formattedFiles = files.map((f) =>
-    formatPathForExport(f, { includeFilePaths: exportCfg.includeFilePaths, redactHomeDir })
+    formatPathForExport(f, { includeFilePaths: exportCfg.includeFilePaths, redactHomeDir: true })
   );
-  const anchorFormatted = anchor
-    ? formatPathForExport(anchor, { includeFilePaths: exportCfg.includeFilePaths, redactHomeDir })
-    : null;
-
-  const wrapper = [
-    'You are my coding assistant. Help me resume this work.',
-    'Use only the context below; ask up to 3 concise questions if something is missing.',
-    'Return: goal, top 3 next steps, and any risks/unknowns.'
-  ].join('\n');
-
-  const lines: string[] = [];
-  lines.push(wrapper);
-  lines.push('');
-  lines.push('---');
-  lines.push('');
-  lines.push('# Threads - Resume Context');
-  lines.push('');
-  lines.push(`Goal: ${(snapshot.current_goal || '').trim() || '(unknown)'}`);
-  if (anchorFormatted) {
-    lines.push(`Anchor: ${anchorFormatted}`);
-  }
-  lines.push('');
-
-  const listLimit = mode.mode === 'compact' ? 6 : 10;
-  const listBlock = (title: string, items?: string[]) => {
-    lines.push(`## ${title}`);
-    if (!items || items.length === 0) {
-      lines.push('- (none)');
-      lines.push('');
-      return;
-    }
-    for (const item of items.slice(0, listLimit)) {
-      lines.push(`- ${item}`);
-    }
-    lines.push('');
-  };
-
-  listBlock('Recent actions', snapshot.completed_work ?? []);
-  listBlock('Next steps', snapshot.next_steps ?? []);
-  listBlock('Open questions', snapshot.open_issues ?? []);
-
+  const recentActions = (snapshot.completed_work ?? []).slice(0, 6);
+  const nextStep = (snapshot.next_steps?.[0] ?? state?.nextSteps?.[0] ?? '').toString().trim();
+  const debugNotes: string[] = [];
   if (exportCfg.includeTaskHistory && state?.lastTask?.name) {
-    lines.push('## Last task (best-effort)');
-    lines.push(`- ${state.lastTask.name}`);
-    lines.push('');
+    debugNotes.push(`Last task: ${state.lastTask.name}`);
   }
-
-  if (exportCfg.includeFilePaths && formattedFiles.length) {
-    lines.push(`## Files (top ${Math.min(fileLimit, formattedFiles.length)})`);
-    for (const f of formattedFiles) {
-      lines.push(`- ${f}`);
-    }
-    lines.push('');
+  if (lastDebugSession?.name) {
+    debugNotes.push(`Last debug session: ${lastDebugSession.name}`);
   }
-
-  if (mode.mode !== 'compact' && exportCfg.includeDebugSummary) {
-    lines.push('## Snapshot summary');
-    lines.push(snapshot.summary_text || '(none)');
-    lines.push('');
-  }
-
-  if (mode.mode === 'debug') {
-    lines.push('## Debug');
-    lines.push(`Backend URL: ${backendUrl}`);
-    lines.push(`Session ID: ${sessionId ?? '(none)'}`);
-    lines.push(`Snapshot ID: ${getSnapshotId(snapshot) ?? lastSnapshotId ?? '(unknown)'}`);
-    lines.push(`Last checkpoint time: ${lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toISOString() : '(none)'}`);
-    lines.push(`Last checkpoint reason: ${lastCheckpointReason ?? '(none)'}`);
-    lines.push(`Last backend error: ${lastBackendError ?? '(none)'}`);
-    lines.push('');
+  if (runtimeMode === 'remote') {
+    debugNotes.push('Runtime mode: remote (backend sync enabled)');
+  } else {
+    debugNotes.push('Runtime mode: local-only');
   }
 
   if (mode.mode === 'deep') {
     try {
-      const history = await fetchJson<{ snapshots: SnapshotListItem[] }>(
-        `${backendUrl}/project/snapshots?root_path=${encodeURIComponent(rootPath)}&limit=5`
-      );
-      if (history.snapshots?.length) {
-        lines.push('## Recent snapshots (history)');
-        for (const s of history.snapshots) {
+      const adapter = storageAdapter ?? ensureStorageAdapter(rootPath);
+      const history = await adapter.listSnapshots(rootPath, 5);
+      if (history.length) {
+        const historyLines = history.map((s) => {
           const when = new Date(s.created_at).toLocaleString();
           const hint = (s.current_goal || s.summary_text || '').toString().trim();
-          lines.push(`- ${when} - ${hint || s.id}`);
-        }
-        lines.push('');
+          return `${when} - ${hint || s.id}`;
+        });
+        debugNotes.push(`Recent snapshots: ${historyLines.join(' | ')}`);
       }
     } catch (err) {
       logError('Threads: Failed to fetch snapshot history for deep export', err);
     }
   }
 
+  const snippets = (await buildAnchorSnippet(state)) ?? undefined;
+  const handoff = await buildAgentHandoffText({
+    mode: mode.mode,
+    goal: (snapshot.current_goal || '').trim() || state?.currentGoal || '(unknown)',
+    anchor: anchorFormatted ?? undefined,
+    recentActions,
+    whatChanged: formattedFiles.length ? [`Touched files: ${formattedFiles.slice(0, 5).join(', ')}`] : recentActions,
+    openQuestions: snapshot.open_issues ?? [],
+    nextStep: nextStep || '(not set)',
+    constraints: snapshot.decisions ?? [],
+    confidenceTag: (snapshot as any).confidence_tag ?? undefined,
+    files: formattedFiles,
+    debugNotes,
+    lastError: lastBackendError ?? undefined,
+    snippets
+  });
+
   const compactLineLimit = 300;
-  if (mode.mode === 'compact' && lines.length > compactLineLimit) {
-    lines.splice(compactLineLimit - 1);
-    lines.push('...(trimmed to stay under 300 lines)');
-  }
+  const handoffLines = handoff.split('\n');
+  const finalText =
+    mode.mode === 'compact' && handoffLines.length > compactLineLimit
+      ? [...handoffLines.slice(0, compactLineLimit - 1), '...(trimmed to stay under 300 lines)'].join('\n')
+      : handoff;
 
   logInfo(`Threads: Copy for LLM (${mode.mode})`);
-  await vscode.env.clipboard.writeText(lines.join('\n'));
-  vscode.window.showInformationMessage('Threads: Copied resume context for LLM.');
+  await vscode.env.clipboard.writeText(finalText);
+  const exportPath = await writeHandoffExport(finalText);
+  vscode.window.showInformationMessage(
+    exportPath ? `Threads: Copied handoff (saved to ${exportPath}).` : 'Threads: Copied resume context for LLM.'
+  );
+}
+
+async function configureLlm() {
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: 'None', description: 'Disable LLM usage', value: 'none' },
+      { label: 'Ollama (local)', description: 'Privacy-first local model', value: 'ollama' },
+      { label: 'OpenAI (BYO key)', description: 'Use your own OpenAI-compatible key', value: 'openai' }
+    ],
+    { title: 'Threads: Configure LLM', placeHolder: 'Choose a provider' }
+  );
+  if (!pick) {
+    return;
+  }
+
+  const config = vscode.workspace.getConfiguration('threads');
+  if (pick.value === 'none') {
+    await config.update('llm.provider', 'none', vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('Threads: LLM disabled.');
+    return;
+  }
+
+  if (pick.value === 'ollama') {
+    const current = getConfig().llm;
+    const url = await vscode.window.showInputBox({
+      title: 'Ollama URL',
+      value: current.ollamaUrl,
+      prompt: 'Default is http://localhost:11434'
+    });
+    if (!url) {
+      return;
+    }
+    const model = await vscode.window.showInputBox({
+      title: 'Ollama model',
+      value: current.ollamaModel,
+      prompt: 'Example: llama3.1'
+    });
+    if (!model) {
+      return;
+    }
+    await config.update('llm.provider', 'ollama', vscode.ConfigurationTarget.Global);
+    await config.update('llm.ollamaUrl', url, vscode.ConfigurationTarget.Global);
+    await config.update('llm.ollamaModel', model, vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('Threads: Ollama configured.');
+    return;
+  }
+
+  if (pick.value === 'openai') {
+    const current = getConfig().llm;
+    const apiKey = await vscode.window.showInputBox({
+      title: 'OpenAI API key',
+      prompt: 'Stored securely in VS Code SecretStorage',
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (!apiKey) {
+      return;
+    }
+    const model = await vscode.window.showInputBox({
+      title: 'OpenAI model',
+      value: current.openaiModel,
+      prompt: 'Example: gpt-5.2-mini (change if unavailable)'
+    });
+    if (!model) {
+      return;
+    }
+    const baseUrl = await vscode.window.showInputBox({
+      title: 'OpenAI base URL (optional)',
+      value: current.openaiBaseUrl,
+      prompt: 'Leave blank for https://api.openai.com'
+    });
+    await extensionContext?.secrets.store('threads.openaiApiKey', apiKey);
+    await config.update('llm.provider', 'openai', vscode.ConfigurationTarget.Global);
+    await config.update('llm.openaiModel', model, vscode.ConfigurationTarget.Global);
+    await config.update('llm.openaiBaseUrl', baseUrl ?? '', vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('Threads: OpenAI configured.');
+  }
+}
+
+async function testLlmConnection() {
+  const provider = await getLlmProvider();
+  if (!provider || !provider.isConfigured()) {
+    lastLlmTestStatus = 'Not configured';
+    vscode.window.showWarningMessage('Threads: LLM provider not configured.');
+    return;
+  }
+  const result = await provider.testConnection();
+  lastLlmTestStatus = result.message;
+  if (result.ok) {
+    vscode.window.showInformationMessage(`Threads: ${result.message}`);
+  } else {
+    vscode.window.showErrorMessage(`Threads: ${result.message}`);
+  }
+}
+
+async function openDataFolder() {
+  if (!dataDir) {
+    vscode.window.showWarningMessage('Threads: Data folder not available yet.');
+    return;
+  }
+  await vscode.env.openExternal(vscode.Uri.file(dataDir));
+}
+
+async function deleteLocalData() {
+  if (!dataDir) {
+    vscode.window.showWarningMessage('Threads: Data folder not available yet.');
+    return;
+  }
+  const choice = await vscode.window.showWarningMessage(
+    `Delete local Threads data at ${dataDir}?`,
+    { modal: true },
+    'Delete'
+  );
+  if (choice !== 'Delete') {
+    return;
+  }
+  try {
+    await fs.rm(dataDir, { recursive: true, force: true });
+    await extensionContext?.workspaceState.update('threads.didFirstCheckpoint', false);
+    vscode.window.showInformationMessage('Threads: Local data deleted.');
+  } catch (err) {
+    logError('Threads: Failed to delete local data', err);
+    vscode.window.showErrorMessage('Threads: Failed to delete local data.');
+  }
 }
 
 async function sendFeedback(context: vscode.ExtensionContext) {
-  const { feedback, backendUrl } = getConfig();
+  const { feedback, runtimeMode: mode, remote } = getConfig();
+  const backendUrl = mode === 'remote' ? remote.backendUrl : '(local mode)';
   const state = await readLastSessionState();
   const version = context.extension?.packageJSON?.version ?? 'unknown';
   const snapshotId = state?.snapshotId ?? lastSnapshotId ?? '(unknown)';
@@ -1563,6 +1868,8 @@ async function sendFeedback(context: vscode.ExtensionContext) {
     '',
     '## Context (auto)',
     `- Extension version: ${version}`,
+    `- Runtime mode: ${mode}`,
+    `- Data path: ${dataDir ?? '(unknown)'}`,
     `- Backend URL: ${backendUrl}`,
     `- Snapshot ID: ${snapshotId}`,
     `- Last checkpoint: ${lastCheckpoint}`,
@@ -1603,8 +1910,13 @@ async function showStatusMenu() {
     { label: 'Browse snapshots', description: 'Pick from history', action: 'browse' },
     { label: 'Export', kind: vscode.QuickPickItemKind.Separator },
     { label: 'Export context bundle', description: 'Full file / copy / agent prompt', action: 'export' },
+    { label: 'LLM', kind: vscode.QuickPickItemKind.Separator },
+    { label: 'Configure LLM', description: 'Set provider + model', action: 'llm-config' },
+    { label: 'Test LLM connection', description: 'Run a quick connectivity check', action: 'llm-test' },
     { label: 'Maintenance', kind: vscode.QuickPickItemKind.Separator },
     { label: 'Diagnostics', description: 'Shows runtime state', action: 'diag' },
+    { label: 'Open data folder', description: 'Show local Threads data', action: 'open-data' },
+    { label: 'Delete local data', description: 'Remove .threads data', action: 'delete-data' },
     { label: 'Send feedback', description: 'Opens/copies a feedback template', action: 'feedback' },
     { label: 'Show output log', description: 'Threads output channel', action: 'out' }
   ];
@@ -1637,6 +1949,14 @@ async function showStatusMenu() {
     await exportContextBundle();
   } else if (pick.action === 'diag') {
     await showDiagnostics();
+  } else if (pick.action === 'llm-config') {
+    await configureLlm();
+  } else if (pick.action === 'llm-test') {
+    await testLlmConnection();
+  } else if (pick.action === 'open-data') {
+    await openDataFolder();
+  } else if (pick.action === 'delete-data') {
+    await deleteLocalData();
   } else if (pick.action === 'feedback') {
     if (extensionContext) {
       await sendFeedback(extensionContext);
@@ -1647,17 +1967,25 @@ async function showStatusMenu() {
 }
 
 async function showDiagnostics() {
-  const { backendUrl, autoCheckpoint } = getConfig();
+  const { runtimeMode: mode, remote, llm, autoCheckpoint } = getConfig();
+  const provider = await getLlmProvider();
+  const llmConfigured = provider?.isConfigured() ?? false;
   const lines: string[] = [];
   lines.push('# Threads Diagnostics');
   lines.push('');
   const lastCheckpoint = lastSnapshotAtMs ? new Date(lastSnapshotAtMs).toLocaleString() : '(none)';
   const lastCheckpointLine = `${lastCheckpoint}${lastCheckpointReason ? ` (${lastCheckpointReason})` : ''}`;
-  lines.push(`Backend URL: \`${backendUrl}\``);
+  lines.push(`Runtime mode: \`${mode}\``);
+  lines.push(`Data path: \`${dataDir ?? '(unknown)'}\``);
+  lines.push(`Backend URL: \`${mode === 'remote' ? remote.backendUrl : '(local mode)'}\``);
   lines.push(`Session ID: \`${sessionId ?? '(none)'}\``);
   lines.push(`Last checkpoint: \`${lastCheckpointLine}\``);
   lines.push(`Pending events: \`${pendingEvents.length}\``);
   lines.push(`Last error: \`${lastBackendError ?? '(none)'}\``);
+  lines.push(`LLM provider: \`${llm.provider}\``);
+  lines.push(`LLM configured: \`${llmConfigured ? 'yes' : 'no'}\``);
+  lines.push(`Last summary source: \`${lastSummarySource}\``);
+  lines.push(`Last LLM test: \`${lastLlmTestStatus ?? '(none)'}\``);
   lines.push('');
   lines.push('## Activity');
   lines.push(`Events since checkpoint: \`${eventsSinceSnapshot}\``);
@@ -1908,12 +2236,18 @@ function registerEventListeners(context: vscode.ExtensionContext) {
         exitCode: e.exitCode ?? null
       });
     }),
-    vscode.debug.onDidStartDebugSession((debugSession) =>
-      queueEvent('debug_start', { name: debugSession.name, type: debugSession.type })
-    ),
-    vscode.debug.onDidTerminateDebugSession((debugSession) =>
-      queueEvent('debug_end', { name: debugSession.name, type: debugSession.type })
-    )
+    vscode.debug.onDidStartDebugSession((debugSession) => {
+      lastDebugSession = { name: debugSession.name, startedAt: new Date().toISOString() };
+      queueEvent('debug_start', { name: debugSession.name, type: debugSession.type });
+    }),
+    vscode.debug.onDidTerminateDebugSession((debugSession) => {
+      if (lastDebugSession?.name === debugSession.name) {
+        lastDebugSession.endedAt = new Date().toISOString();
+      } else {
+        lastDebugSession = { name: debugSession.name, endedAt: new Date().toISOString() };
+      }
+      queueEvent('debug_end', { name: debugSession.name, type: debugSession.type });
+    })
   );
 }
 
@@ -1963,6 +2297,10 @@ export async function activate(context: vscode.ExtensionContext) {
   const copyForLLMCommand = vscode.commands.registerCommand('threads.copyForLLM', copyForLLM);
   const openAnchorFileCommand = vscode.commands.registerCommand('threads.openAnchorFile', openAnchorFile);
   const runLastTaskCommand = vscode.commands.registerCommand('threads.runLastTask', runLastTask);
+  const configureLlmCommand = vscode.commands.registerCommand('threads.configureLlm', configureLlm);
+  const testLlmCommand = vscode.commands.registerCommand('threads.testLlmConnection', testLlmConnection);
+  const openDataFolderCommand = vscode.commands.registerCommand('threads.openDataFolder', openDataFolder);
+  const deleteLocalDataCommand = vscode.commands.registerCommand('threads.deleteLocalData', deleteLocalData);
   const sendFeedbackCommand = vscode.commands.registerCommand('threads.sendFeedback', async () => {
     await sendFeedback(context);
   });
@@ -1982,6 +2320,10 @@ export async function activate(context: vscode.ExtensionContext) {
     copyForLLMCommand,
     openAnchorFileCommand,
     runLastTaskCommand,
+    configureLlmCommand,
+    testLlmCommand,
+    openDataFolderCommand,
+    deleteLocalDataCommand,
     sendFeedbackCommand
   );
   ensureStatusBarItem(context);
