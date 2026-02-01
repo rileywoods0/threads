@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Threads: Verify last-session state",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/verify-last-session-state.ps1",
+        "-WorkspacePath",
+        "${workspaceFolder}"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Threads: Verify snapshot files",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/verify-snapshot-files.ps1",
+        "-WorkspacePath",
+        "${workspaceFolder}"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Threads: Backend smoke (optional)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/scripts/backend-smoke.ps1",
+        "-BackendUrl",
+        "http://localhost:8000",
+        "-RootPath",
+        "${workspaceFolder}/.."
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

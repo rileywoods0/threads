@@ -3,7 +3,7 @@
 ## Setup
 - Ensure Threads is running in local mode (default): `threads.runtimeMode = "local"`.
 - Start Ollama locally and pull a model (example: `ollama run llama3.1`).
-- Run **Threads: Configure LLM** and choose **Ollama**.
+- Run **Threads: Enhance with AI (Optional)** and choose **Ollama**.
 
 ## Steps
 1. Open `testing/src/demo.py` and make a small edit.
@@ -21,7 +21,7 @@
 - If LLM fails, output still appears using heuristic content.
 
 ## Optional: OpenAI BYO key
-- Run **Threads: Configure LLM** -> OpenAI.
+- Run **Threads: Enhance with AI (Optional)** -> OpenAI.
 - Provide a model and key.
 - Run **Threads: Test LLM Connection** -> should return OK.
 

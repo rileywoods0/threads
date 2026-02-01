@@ -9,7 +9,7 @@
 2. Open the Threads sidebar or run "Threads: Show Last State".
 3. In the snapshot panel, review the Start here block.
 4. Click "Resume workspace".
-5. (Optional) Click "Copy for LLM" and select Compact.
+5. (Optional) Click "Continue with AI" or "Copy for LLM" and select Compact.
 
 ## Expected
 - Resume prompt behavior follows `threads.resumeMode` (quiet shows status only; prompt shows a single prompt).
@@ -19,3 +19,4 @@
 - Cursor/selection position is restored for reopened files (best effort).
 - No panels auto-open or steal focus during auto-checkpoints.
 - Copy for LLM shows 3 formats and produces paste-ready, redacted output.
+- Continue with AI generates an agent-ready handoff (if configured).

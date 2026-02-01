@@ -113,8 +113,19 @@ function getConfig() {
       includeDebugSummary: config.get<boolean>('export.includeDebugSummary', true)
     },
     llm: {
+      enabled: config.get<boolean>('llm.enabled', false),
       provider: config.get<'none' | 'ollama' | 'openai'>('llm.provider', 'none'),
       includeCodeSnippets: config.get<boolean>('llm.includeCodeSnippets', false),
+      includeDiffStatsOnly: config.get<boolean>('llm.includeDiffStatsOnly', true),
+      includeFilePaths: config.get<boolean>(
+        'llm.includeFilePaths',
+        config.get<boolean>('export.includeFilePaths', true)
+      ),
+      redactHomeDir: config.get<boolean>(
+        'llm.redactHomeDir',
+        config.get<boolean>('export.redactHomeDir', true)
+      ),
+      maxFiles: config.get<number>('llm.maxFiles', config.get<number>('export.maxFiles', 10)),
       ollamaUrl: config.get<string>('llm.ollamaUrl', 'http://localhost:11434'),
       ollamaModel: config.get<string>('llm.ollamaModel', 'llama3.1'),
       openaiModel: config.get<string>('llm.openaiModel', 'gpt-5.2-mini'),
@@ -161,7 +172,7 @@ function ensureStorageAdapter(rootPath: string): StorageAdapter {
 
 async function getLlmProvider(): Promise<LlmProvider | null> {
   const { llm } = getConfig();
-  if (llm.provider === 'none') {
+  if (!llm.enabled || llm.provider === 'none') {
     lastLlmProvider = null;
     return null;
   }
@@ -1624,42 +1635,29 @@ async function writeHandoffExport(contents: string): Promise<string | null> {
   }
 }
 
-async function copyForLLM() {
+async function buildHandoff(mode: HandoffMode): Promise<string | null> {
   const rootPath = getWorkspaceRoot();
   if (!rootPath) {
     vscode.window.showWarningMessage('Threads: No workspace folder open.');
-    return;
+    return null;
   }
 
-  const modeItems: Array<vscode.QuickPickItem & { mode: HandoffMode }> = [
-    { label: 'Compact', description: 'Default (<300 lines)', mode: 'compact' },
-    { label: 'Debug-focused', description: 'Includes runtime state + last errors', mode: 'debug' },
-    { label: 'Deep context', description: 'Adds recent snapshot history', mode: 'deep' }
-  ];
-  const mode = await vscode.window.showQuickPick(modeItems, {
-    title: 'Copy for LLM',
-    placeHolder: 'Choose a format (Compact is default)'
-  });
-  if (!mode) {
-    return;
-  }
-
-  const { export: exportCfg } = getConfig();
+  const { export: exportCfg, llm } = getConfig();
   const state = await readLastSessionState();
   const snapshot = lastLoadedSnapshot ?? (await fetchLatestSnapshot(rootPath));
   if (!snapshot) {
     vscode.window.showInformationMessage('Threads: No snapshot available yet.');
-    return;
+    return null;
   }
 
   const anchorFormatted = formatAnchorForHandoff(state, {
-    includeFilePaths: exportCfg.includeFilePaths,
-    redactHomeDir: true
+    includeFilePaths: llm.includeFilePaths,
+    redactHomeDir: llm.redactHomeDir
   });
-  const fileLimit = mode.mode === 'compact' ? Math.min(exportCfg.maxFiles, 6) : exportCfg.maxFiles;
+  const fileLimit = mode === 'compact' ? Math.min(llm.maxFiles, 6) : llm.maxFiles;
   const files = Array.from(new Set(state?.files ?? [])).slice(0, fileLimit);
   const formattedFiles = files.map((f) =>
-    formatPathForExport(f, { includeFilePaths: exportCfg.includeFilePaths, redactHomeDir: true })
+    formatPathForExport(f, { includeFilePaths: llm.includeFilePaths, redactHomeDir: llm.redactHomeDir })
   );
   const recentActions = (snapshot.completed_work ?? []).slice(0, 6);
   const nextStep = (snapshot.next_steps?.[0] ?? state?.nextSteps?.[0] ?? '').toString().trim();
@@ -1667,16 +1665,12 @@ async function copyForLLM() {
   if (exportCfg.includeTaskHistory && state?.lastTask?.name) {
     debugNotes.push(`Last task: ${state.lastTask.name}`);
   }
-  if (lastDebugSession?.name) {
+  if (exportCfg.includeDebugSummary && lastDebugSession?.name) {
     debugNotes.push(`Last debug session: ${lastDebugSession.name}`);
   }
-  if (runtimeMode === 'remote') {
-    debugNotes.push('Runtime mode: remote (backend sync enabled)');
-  } else {
-    debugNotes.push('Runtime mode: local-only');
-  }
+  debugNotes.push(runtimeMode === 'remote' ? 'Runtime mode: remote (backend sync enabled)' : 'Runtime mode: local-only');
 
-  if (mode.mode === 'deep') {
+  if (mode === 'deep') {
     try {
       const adapter = storageAdapter ?? ensureStorageAdapter(rootPath);
       const history = await adapter.listSnapshots(rootPath, 5);
@@ -1693,13 +1687,29 @@ async function copyForLLM() {
     }
   }
 
+  const diffStats: string[] = [];
+  if (formattedFiles.length) {
+    diffStats.push(`Files touched: ${formattedFiles.length}`);
+  }
+  const saveCount = eventCountsSinceSnapshot.get('file.save') ?? 0;
+  if (saveCount) {
+    diffStats.push(`File saves: ${saveCount}`);
+  }
+  const debugStarts = eventCountsSinceSnapshot.get('debug.start') ?? 0;
+  if (debugStarts) {
+    diffStats.push(`Debug sessions: ${debugStarts}`);
+  }
+  const whatChanged = llm.includeDiffStatsOnly
+    ? (diffStats.length ? [diffStats.join(', ')] : recentActions)
+    : (formattedFiles.length ? [`Touched files: ${formattedFiles.slice(0, 5).join(', ')}`] : recentActions);
+
   const snippets = (await buildAnchorSnippet(state)) ?? undefined;
   const handoff = await buildAgentHandoffText({
-    mode: mode.mode,
+    mode,
     goal: (snapshot.current_goal || '').trim() || state?.currentGoal || '(unknown)',
     anchor: anchorFormatted ?? undefined,
     recentActions,
-    whatChanged: formattedFiles.length ? [`Touched files: ${formattedFiles.slice(0, 5).join(', ')}`] : recentActions,
+    whatChanged,
     openQuestions: snapshot.open_issues ?? [],
     nextStep: nextStep || '(not set)',
     constraints: snapshot.decisions ?? [],
@@ -1713,9 +1723,30 @@ async function copyForLLM() {
   const compactLineLimit = 300;
   const handoffLines = handoff.split('\n');
   const finalText =
-    mode.mode === 'compact' && handoffLines.length > compactLineLimit
+    mode === 'compact' && handoffLines.length > compactLineLimit
       ? [...handoffLines.slice(0, compactLineLimit - 1), '...(trimmed to stay under 300 lines)'].join('\n')
       : handoff;
+
+  return finalText;
+}
+
+async function copyForLLM() {
+  const modeItems: Array<vscode.QuickPickItem & { mode: HandoffMode }> = [
+    { label: 'Compact', description: 'Default (<300 lines)', mode: 'compact' },
+    { label: 'Debug-focused', description: 'Includes runtime state + last errors', mode: 'debug' },
+    { label: 'Deep context', description: 'Adds recent snapshot history', mode: 'deep' }
+  ];
+  const mode = await vscode.window.showQuickPick(modeItems, {
+    title: 'Copy for LLM',
+    placeHolder: 'Choose a format (Compact is default)'
+  });
+  if (!mode) {
+    return;
+  }
+  const finalText = await buildHandoff(mode.mode);
+  if (!finalText) {
+    return;
+  }
 
   logInfo(`Threads: Copy for LLM (${mode.mode})`);
   await vscode.env.clipboard.writeText(finalText);
@@ -1725,14 +1756,118 @@ async function copyForLLM() {
   );
 }
 
+async function continueWithAi() {
+  const { llm } = getConfig();
+  let provider = await getLlmProvider();
+
+  if (!llm.enabled || !provider || !provider.isConfigured()) {
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: 'Use local model (Ollama) — recommended', value: 'ollama' },
+        { label: 'Use API key (OpenAI)', value: 'openai' },
+        { label: 'Skip for now', value: 'skip' }
+      ],
+      { title: 'Continue with AI', placeHolder: 'Choose how to enable AI enhancements' }
+    );
+    if (!pick || pick.value === 'skip') {
+      return;
+    }
+    const configured = await configureLlmProvider(pick.value as 'ollama' | 'openai');
+    if (!configured) {
+      return;
+    }
+  }
+
+  provider = await getLlmProvider();
+  if (!provider || !provider.isConfigured()) {
+    vscode.window.showWarningMessage('Threads: AI provider not configured.');
+    return;
+  }
+
+  const result = await provider.testConnection();
+  lastLlmTestStatus = result.message;
+  if (!result.ok) {
+    vscode.window.showErrorMessage(`Threads: ${result.message}`);
+    return;
+  }
+
+  const handoff = await buildHandoff('compact');
+  if (!handoff) {
+    return;
+  }
+  await vscode.env.clipboard.writeText(handoff);
+  await writeHandoffExport(handoff);
+  vscode.window.showInformationMessage('Threads: Copied resume context for your agent.');
+}
+
+async function configureLlmProvider(provider: 'ollama' | 'openai'): Promise<boolean> {
+  const config = vscode.workspace.getConfiguration('threads');
+  const current = getConfig().llm;
+
+  if (provider === 'ollama') {
+    const url = await vscode.window.showInputBox({
+      title: 'Ollama URL',
+      value: current.ollamaUrl,
+      prompt: 'Default is http://localhost:11434'
+    });
+    if (!url) {
+      return false;
+    }
+    const model = await vscode.window.showInputBox({
+      title: 'Ollama model',
+      value: current.ollamaModel,
+      prompt: 'Example: llama3.1'
+    });
+    if (!model) {
+      return false;
+    }
+    await config.update('llm.enabled', true, vscode.ConfigurationTarget.Global);
+    await config.update('llm.provider', 'ollama', vscode.ConfigurationTarget.Global);
+    await config.update('llm.ollamaUrl', url, vscode.ConfigurationTarget.Global);
+    await config.update('llm.ollamaModel', model, vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('Threads: Ollama configured.');
+    return true;
+  }
+
+  const apiKey = await vscode.window.showInputBox({
+    title: 'OpenAI API key',
+    prompt: 'Stored securely in VS Code SecretStorage',
+    password: true,
+    ignoreFocusOut: true
+  });
+  if (!apiKey) {
+    return false;
+  }
+  const model = await vscode.window.showInputBox({
+    title: 'OpenAI model',
+    value: current.openaiModel,
+    prompt: 'Example: gpt-5.2-mini (change if unavailable)'
+  });
+  if (!model) {
+    return false;
+  }
+  const baseUrl = await vscode.window.showInputBox({
+    title: 'OpenAI base URL (optional)',
+    value: current.openaiBaseUrl,
+    prompt: 'Leave blank for https://api.openai.com'
+  });
+  await extensionContext?.secrets.store('threads.openaiApiKey', apiKey);
+  await config.update('llm.enabled', true, vscode.ConfigurationTarget.Global);
+  await config.update('llm.provider', 'openai', vscode.ConfigurationTarget.Global);
+  await config.update('llm.openaiModel', model, vscode.ConfigurationTarget.Global);
+  await config.update('llm.openaiBaseUrl', baseUrl ?? '', vscode.ConfigurationTarget.Global);
+  vscode.window.showInformationMessage('Threads: OpenAI configured.');
+  return true;
+}
+
 async function configureLlm() {
   const pick = await vscode.window.showQuickPick(
     [
-      { label: 'None', description: 'Disable LLM usage', value: 'none' },
+      { label: 'Disable AI', description: 'Turn off AI enhancements', value: 'none' },
       { label: 'Ollama (local)', description: 'Privacy-first local model', value: 'ollama' },
       { label: 'OpenAI (BYO key)', description: 'Use your own OpenAI-compatible key', value: 'openai' }
     ],
-    { title: 'Threads: Configure LLM', placeHolder: 'Choose a provider' }
+    { title: 'Threads: Enhance with AI (Optional)', placeHolder: 'Choose a provider' }
   );
   if (!pick) {
     return;
@@ -1741,72 +1876,20 @@ async function configureLlm() {
   const config = vscode.workspace.getConfiguration('threads');
   if (pick.value === 'none') {
     await config.update('llm.provider', 'none', vscode.ConfigurationTarget.Global);
-    vscode.window.showInformationMessage('Threads: LLM disabled.');
+    await config.update('llm.enabled', false, vscode.ConfigurationTarget.Global);
+    vscode.window.showInformationMessage('Threads: AI enhancements disabled.');
     return;
   }
 
-  if (pick.value === 'ollama') {
-    const current = getConfig().llm;
-    const url = await vscode.window.showInputBox({
-      title: 'Ollama URL',
-      value: current.ollamaUrl,
-      prompt: 'Default is http://localhost:11434'
-    });
-    if (!url) {
-      return;
-    }
-    const model = await vscode.window.showInputBox({
-      title: 'Ollama model',
-      value: current.ollamaModel,
-      prompt: 'Example: llama3.1'
-    });
-    if (!model) {
-      return;
-    }
-    await config.update('llm.provider', 'ollama', vscode.ConfigurationTarget.Global);
-    await config.update('llm.ollamaUrl', url, vscode.ConfigurationTarget.Global);
-    await config.update('llm.ollamaModel', model, vscode.ConfigurationTarget.Global);
-    vscode.window.showInformationMessage('Threads: Ollama configured.');
-    return;
-  }
-
-  if (pick.value === 'openai') {
-    const current = getConfig().llm;
-    const apiKey = await vscode.window.showInputBox({
-      title: 'OpenAI API key',
-      prompt: 'Stored securely in VS Code SecretStorage',
-      password: true,
-      ignoreFocusOut: true
-    });
-    if (!apiKey) {
-      return;
-    }
-    const model = await vscode.window.showInputBox({
-      title: 'OpenAI model',
-      value: current.openaiModel,
-      prompt: 'Example: gpt-5.2-mini (change if unavailable)'
-    });
-    if (!model) {
-      return;
-    }
-    const baseUrl = await vscode.window.showInputBox({
-      title: 'OpenAI base URL (optional)',
-      value: current.openaiBaseUrl,
-      prompt: 'Leave blank for https://api.openai.com'
-    });
-    await extensionContext?.secrets.store('threads.openaiApiKey', apiKey);
-    await config.update('llm.provider', 'openai', vscode.ConfigurationTarget.Global);
-    await config.update('llm.openaiModel', model, vscode.ConfigurationTarget.Global);
-    await config.update('llm.openaiBaseUrl', baseUrl ?? '', vscode.ConfigurationTarget.Global);
-    vscode.window.showInformationMessage('Threads: OpenAI configured.');
-  }
+  await configureLlmProvider(pick.value as 'ollama' | 'openai');
 }
 
 async function testLlmConnection() {
+  const { llm } = getConfig();
   const provider = await getLlmProvider();
-  if (!provider || !provider.isConfigured()) {
+  if (!llm.enabled || !provider || !provider.isConfigured()) {
     lastLlmTestStatus = 'Not configured';
-    vscode.window.showWarningMessage('Threads: LLM provider not configured.');
+    vscode.window.showWarningMessage('Threads: AI provider not configured.');
     return;
   }
   const result = await provider.testConnection();
@@ -1902,6 +1985,7 @@ async function showStatusMenu() {
     { label: 'Open anchor file', description: 'Jump to your last active file', action: 'anchor' },
     { label: 'Review', kind: vscode.QuickPickItemKind.Separator },
     { label: 'Show last session', description: 'Opens the snapshot panel', action: 'show' },
+    { label: 'Continue with AI', description: 'Optional, agent-ready handoff', action: 'continue-ai' },
     { label: 'Copy for LLM', description: 'Paste-ready resume context', action: 'llm' },
     { label: 'Run last task', description: 'Best-effort re-run last task', action: 'task' },
     { label: 'Snapshots', kind: vscode.QuickPickItemKind.Separator },
@@ -1911,10 +1995,11 @@ async function showStatusMenu() {
     { label: 'Export', kind: vscode.QuickPickItemKind.Separator },
     { label: 'Export context bundle', description: 'Full file / copy / agent prompt', action: 'export' },
     { label: 'LLM', kind: vscode.QuickPickItemKind.Separator },
-    { label: 'Configure LLM', description: 'Set provider + model', action: 'llm-config' },
+    { label: 'Enhance with AI (Optional)', description: 'Set provider + model', action: 'llm-config' },
     { label: 'Test LLM connection', description: 'Run a quick connectivity check', action: 'llm-test' },
     { label: 'Maintenance', kind: vscode.QuickPickItemKind.Separator },
     { label: 'Diagnostics', description: 'Shows runtime state', action: 'diag' },
+    { label: 'Run smoke test', description: 'One-click validation checks', action: 'smoke' },
     { label: 'Open data folder', description: 'Show local Threads data', action: 'open-data' },
     { label: 'Delete local data', description: 'Remove .threads data', action: 'delete-data' },
     { label: 'Send feedback', description: 'Opens/copies a feedback template', action: 'feedback' },
@@ -1931,6 +2016,8 @@ async function showStatusMenu() {
     await openAnchorFile();
   } else if (pick.action === 'show') {
     await showLatestSnapshot();
+  } else if (pick.action === 'continue-ai') {
+    await continueWithAi();
   } else if (pick.action === 'llm') {
     await copyForLLM();
   } else if (pick.action === 'task') {
@@ -1949,6 +2036,8 @@ async function showStatusMenu() {
     await exportContextBundle();
   } else if (pick.action === 'diag') {
     await showDiagnostics();
+  } else if (pick.action === 'smoke') {
+    await runSmokeTest();
   } else if (pick.action === 'llm-config') {
     await configureLlm();
   } else if (pick.action === 'llm-test') {
@@ -1982,6 +2071,7 @@ async function showDiagnostics() {
   lines.push(`Last checkpoint: \`${lastCheckpointLine}\``);
   lines.push(`Pending events: \`${pendingEvents.length}\``);
   lines.push(`Last error: \`${lastBackendError ?? '(none)'}\``);
+  lines.push(`LLM enabled: \`${llm.enabled ? 'yes' : 'no'}\``);
   lines.push(`LLM provider: \`${llm.provider}\``);
   lines.push(`LLM configured: \`${llmConfigured ? 'yes' : 'no'}\``);
   lines.push(`Last summary source: \`${lastSummarySource}\``);
@@ -2006,6 +2096,93 @@ async function showDiagnostics() {
   });
   await vscode.window.showTextDocument(doc, { preview: false });
   logInfo('Threads: Diagnostics opened');
+}
+
+async function runSmokeTest() {
+  const output = getOutputChannel();
+  const timestamp = new Date().toISOString();
+  output.appendLine(`--- Threads Smoke Test (${timestamp}) ---`);
+
+  const results: Array<{ label: string; ok: boolean; detail?: string }> = [];
+  const record = (label: string, ok: boolean, detail?: string) => {
+    results.push({ label, ok, detail });
+    const status = ok ? 'PASS' : 'FAIL';
+    output.appendLine(`${status}: ${label}${detail ? ` - ${detail}` : ''}`);
+  };
+
+  if (!workspaceRoot) {
+    record('Workspace root available', false, 'No workspace root detected.');
+  } else {
+    if (!dataDir) {
+      applyDataDir(workspaceRoot);
+    }
+    const targetDir = dataDir ?? path.join(workspaceRoot, '.threads');
+    try {
+      await fs.mkdir(targetDir, { recursive: true });
+      const probe = path.join(targetDir, 'smoke-test.tmp');
+      await fs.writeFile(probe, 'ok', 'utf8');
+      await fs.rm(probe, { force: true });
+      record('Local data directory writable', true, targetDir);
+    } catch (err) {
+      record('Local data directory writable', false, String(err));
+    }
+  }
+
+  const { runtimeMode: mode, remote } = getConfig();
+  if (mode === 'remote') {
+    try {
+      const payload = await fetchJson<{ status: string }>(`${remote.backendUrl}/health`);
+      record('Backend health check', payload.status === 'ok', payload.status);
+    } catch (err) {
+      record('Backend health check', false, String(err));
+    }
+  } else {
+    record('Backend health check', true, 'Skipped (local mode)');
+  }
+
+  try {
+    if (!sessionId && extensionContext) {
+      await startSession(extensionContext);
+    }
+    await createCheckpoint('smoke-test', { force: true });
+    record('Checkpoint snapshot created', true);
+  } catch (err) {
+    record('Checkpoint snapshot created', false, String(err));
+  }
+
+  let state: LastSessionState | null = null;
+  try {
+    state = await readLastSessionState();
+    const hasSavedAt = Boolean(state?.savedAt);
+    const filesOk = Array.isArray(state?.files);
+    record('last-session-state.json present', hasSavedAt && filesOk, hasSavedAt ? 'Fields OK' : 'Missing savedAt/files');
+  } catch (err) {
+    record('last-session-state.json present', false, String(err));
+  }
+
+  const snapshotId = state?.snapshotId ?? lastSnapshotId ?? null;
+  if (snapshotId && dataDir) {
+    const snapshotPath = path.join(dataDir, 'snapshots', `${snapshotId}.md`);
+    try {
+      await fs.access(snapshotPath);
+      const content = await fs.readFile(snapshotPath, 'utf8');
+      const asciiOnly = !/[^\x00-\x7F]/.test(content);
+      record('Snapshot markdown present', true, snapshotPath);
+      record('Snapshot markdown ASCII-safe', asciiOnly, asciiOnly ? 'ASCII-only' : 'Contains non-ASCII');
+    } catch (err) {
+      record('Snapshot markdown present', false, String(err));
+    }
+  } else {
+    record('Snapshot markdown present', false, 'Missing snapshot ID or data dir.');
+  }
+
+  output.appendLine('--- Smoke Test Complete ---');
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length) {
+    vscode.window.showWarningMessage('Threads: Smoke test failed. See Output > Threads for details.');
+  } else {
+    vscode.window.showInformationMessage('Threads: Smoke test passed.');
+  }
 }
 
 async function pulseStatusBar(message: string) {
@@ -2295,10 +2472,12 @@ export async function activate(context: vscode.ExtensionContext) {
     await createCheckpoint('manual', { force: true });
   });
   const copyForLLMCommand = vscode.commands.registerCommand('threads.copyForLLM', copyForLLM);
+  const continueWithAiCommand = vscode.commands.registerCommand('threads.continueWithAi', continueWithAi);
   const openAnchorFileCommand = vscode.commands.registerCommand('threads.openAnchorFile', openAnchorFile);
   const runLastTaskCommand = vscode.commands.registerCommand('threads.runLastTask', runLastTask);
   const configureLlmCommand = vscode.commands.registerCommand('threads.configureLlm', configureLlm);
   const testLlmCommand = vscode.commands.registerCommand('threads.testLlmConnection', testLlmConnection);
+  const smokeTestCommand = vscode.commands.registerCommand('threads.runSmokeTest', runSmokeTest);
   const openDataFolderCommand = vscode.commands.registerCommand('threads.openDataFolder', openDataFolder);
   const deleteLocalDataCommand = vscode.commands.registerCommand('threads.deleteLocalData', deleteLocalData);
   const sendFeedbackCommand = vscode.commands.registerCommand('threads.sendFeedback', async () => {
@@ -2318,10 +2497,12 @@ export async function activate(context: vscode.ExtensionContext) {
     diagnosticsCommand,
     checkpointNowCommand,
     copyForLLMCommand,
+    continueWithAiCommand,
     openAnchorFileCommand,
     runLastTaskCommand,
     configureLlmCommand,
     testLlmCommand,
+    smokeTestCommand,
     openDataFolderCommand,
     deleteLocalDataCommand,
     sendFeedbackCommand

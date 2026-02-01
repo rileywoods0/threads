@@ -17,8 +17,8 @@ Threads is a developer memory prototype with a VS Code extension that captures I
 3. Open any workspace and start working. Threads captures context immediately (no backend required).
 4. Use **Threads: Save State Now** to generate a snapshot and open the panel.
 
-## Optional: Configure LLM (privacy-first)
-Run **Threads: Configure LLM**:
+## Optional: Enhance with AI (privacy-first)
+Run **Threads: Enhance with AI (Optional)** (this sets `threads.llm.enabled = true`):
 - **Ollama (local)**: set `threads.llm.ollamaUrl` + `threads.llm.ollamaModel`.
 - **OpenAI (BYO key)**: key is stored in VS Code SecretStorage (never written to disk).
 
@@ -48,14 +48,15 @@ npm run compile
 
 ### In-Editor UI
 - Open the **Threads** view in the Activity Bar to access common actions (resume, browse snapshots, open summary markdown, health check).
-- The status bar shows `Threads: In session`; clicking it opens the last snapshot panel (use **More actions...** in the Threads view for the full menu).
-- The snapshot panel includes a compact **Start here** block (anchor file, next step, and actions). **Copy for LLM** offers Compact/Debug-focused/Deep context formats.
+- The status bar shows `Threads: In session`; clicking it opens the last snapshot panel. The Threads sidebar exposes structured sections (Resume, Continue, History, Settings & Tools).
+- The snapshot panel includes a compact **Start here** block (anchor file, next step, and actions). **Copy for LLM** offers Compact/Debug-focused/Deep context formats, and **Continue with AI** provides a single-step handoff.
 - Use **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` for pasting into Copilot/Claude/ChatGPT on project reopen.
 - Use **Threads: Resume Where I Left Off** to reopen the exact files you touched last session.
   - Best-effort restores active editor focus, cursor/selection, and editor column.
 - Use **Threads: Send Feedback** to open/copy a prefilled template (no secrets, no code).
 - `threads.startup.openSnapshotPanel` defaults to `longBreak` to reopen the snapshot panel after time away (set to `off` if you prefer zero auto-panels).
 - Use **Threads: Open Data Folder** to see local snapshots/exports and **Threads: Delete Local Data** to clear everything.
+- Use **Threads: Run Smoke Test** for one-click validation.
 
 ### Debug Workflow
 1. Open `vscode-extension` in VS Code and press `F5` to launch the Extension Development Host.
@@ -73,12 +74,15 @@ If you are in local mode, no backend logs are required.
 - Captured: file paths, editor focus/save events, task/debug start/stop metadata.
 - Not captured by default: code content, `.env`/`.threads` files, or secrets.
 - LLM usage is optional and off by default. Set `threads.llm.includeCodeSnippets=true` to opt into small snippets.
+- Use `threads.llm.includeDiffStatsOnly`, `threads.llm.includeFilePaths`, `threads.llm.redactHomeDir`, and `threads.llm.maxFiles` to fine-tune handoffs.
 - Local data lives under `threads.dataDir` (default `${workspaceFolder}/.threads`).
 - Use **Threads: Delete Local Data** to wipe local state.
 
 ## Testing & Verification Guide
 - **Local-only (no backend):**
   - Use the Extension Development Host with the `testing/` workspace and follow `testing/CHECKLIST.md`.
+- **One-click smoke test:**
+  - Run **Threads: Run Smoke Test** and review the Output > Threads log for PASS/FAIL.
 - **Backend only (remote mode):**
   1. Start Uvicorn as above.
   2. Hit `/health` and `/session/start`.

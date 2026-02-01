@@ -71,11 +71,15 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
   - Try **Debug-focused**: confirm it includes runtime mode + last error (if any) without secrets.
   - Try **Deep context**: confirm it includes a small recent snapshot history block.
 
-## 6c) Redaction settings
+## 6c) Continue with AI (optional)
+- Run **Threads: Enhance with AI (Optional)** or click **Continue with AI** in the sidebar.
+- Confirm it copies a handoff without opening panels.
+
+## 6d) Redaction settings
 - With `threads.export.redactHomeDir=true` (default), exported file paths should show `~` instead of your home directory.
 - Toggle `threads.export.includeFilePaths=false` and confirm exports switch to file names only.
 
-## 6d) Smart surfacing (long-break resume prompt)
+## 6e) Smart surfacing (long-break resume prompt)
 - Lower `threads.resume.longBreakHours` (ex: `0.01`) in `testing/.vscode/settings.json` or run:
   ```powershell
   .\scripts\set-resume-test.ps1 -WorkspacePath (Get-Location).Path -LongBreakHours 0.01 -OpenSnapshotPanel longBreak -ResumeMode prompt
@@ -88,6 +92,10 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 ## 7) Diagnostics
 - Run **Threads: Diagnostics**
   - Confirm it shows: runtime mode, data path, backend URL (if remote), LLM status, pending events, last snapshot time/id, last backend error.
+
+## 8) Run Smoke Test
+- Run **Threads: Run Smoke Test**
+- Confirm Output > Threads shows PASS/FAIL for each check.
 
 ## 8) Backend script smoke test (optional)
 From repo root:

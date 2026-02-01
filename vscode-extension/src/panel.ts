@@ -35,6 +35,22 @@ function renderList(items?: string[]): string {
   return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
 }
 
+function resolveConfidenceTag(snapshot: ThreadsSnapshot): string | null {
+  if (snapshot.confidence_tag) {
+    return snapshot.confidence_tag;
+  }
+  const completed = snapshot.completed_work?.length ?? 0;
+  const openIssues = snapshot.open_issues?.length ?? 0;
+  const nextSteps = snapshot.next_steps?.length ?? 0;
+  if (completed === 0 && openIssues === 0 && nextSteps === 0) {
+    return 'unfinished';
+  }
+  if (completed > 0 && nextSteps > 0) {
+    return 'in flow';
+  }
+  return 'mid-task';
+}
+
 export class ThreadsPanel {
   public static currentPanel: ThreadsPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
@@ -99,6 +115,10 @@ export class ThreadsPanel {
         await vscode.commands.executeCommand('threads.copyForLLM');
         return;
       }
+      if (message?.type === 'continueWithAi') {
+        await vscode.commands.executeCommand('threads.continueWithAi');
+        return;
+      }
     });
   }
 
@@ -106,6 +126,7 @@ export class ThreadsPanel {
     this.snapshot = snapshot;
     this.meta = meta;
     const hasAnchor = Boolean(this.meta?.anchorFileLabel);
+    const confidenceTag = snapshot ? resolveConfidenceTag(snapshot) : null;
     const content = snapshot
       ? `
         <header class="hero">
@@ -115,6 +136,7 @@ export class ThreadsPanel {
             <p class="muted">Instant context so you can pick up right where you left off.</p>
           </div>
           <div class="actions">
+            ${confidenceTag ? `<span class="badge">${escapeHtml(confidenceTag)}</span>` : ''}
             ${
               snapshot.summary_text
                 ? '<button id="copySummary" class="ghost">Copy summary</button>'
@@ -133,13 +155,14 @@ export class ThreadsPanel {
               </div>
               <div>
                 <div class="start-label">Primary next step</div>
-                <div class="start-value">${escapeHtml(this.meta?.nextStep || 'Not set')}</div>
+                <div class="start-value">• ${escapeHtml(this.meta?.nextStep || 'Not set')}</div>
               </div>
             </div>
           </div>
           <div class="start-actions">
             <button id="openAnchorFile" class="ghost" ${hasAnchor ? '' : 'disabled'}>Open anchor</button>
             <button id="resumeWorkspace" class="primary">Resume workspace</button>
+            <button id="continueWithAi" class="ghost">Continue with AI</button>
             <button id="copyForLLM" class="ghost emphasis">Copy for LLM</button>
           </div>
         </section>
@@ -148,7 +171,6 @@ export class ThreadsPanel {
           <section class="card accent">
             <div class="header">Current Goal</div>
             <p>${escapeHtml(snapshot.current_goal || 'Not set')}</p>
-            ${snapshot.confidence_tag ? `<p class="muted">Confidence: ${escapeHtml(snapshot.confidence_tag)}</p>` : ''}
           </section>
           <section class="card">
             <div class="header">Completed Work</div>
@@ -263,6 +285,16 @@ export class ThreadsPanel {
             font-weight: 600;
           }
           .actions { display: flex; gap: 0.5rem; align-items: center; }
+          .badge {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            padding: 0.25rem 0.5rem;
+            border-radius: 999px;
+            border: 1px solid rgba(95, 209, 185, 0.5);
+            color: var(--accent);
+            background: rgba(95, 209, 185, 0.12);
+          }
           .start-here {
             margin-top: 0.75rem;
             display: flex;
@@ -332,6 +364,12 @@ export class ThreadsPanel {
           if (copyForLLM) {
             copyForLLM.addEventListener('click', () => {
               vscodeApi.postMessage({ type: 'copyForLLM' });
+            });
+          }
+          const continueWithAi = document.getElementById('continueWithAi');
+          if (continueWithAi) {
+            continueWithAi.addEventListener('click', () => {
+              vscodeApi.postMessage({ type: 'continueWithAi' });
             });
           }
           const openAnchor = document.getElementById('openAnchorFile');

@@ -10,16 +10,18 @@ Use this folder as a throwaway workspace inside the VS Code Extension Developmen
 
 ## Quick test flow
 1. In the Extension Development Host, open the `testing` folder as the workspace.
-2. Confirm the status bar shows `Threads: In session`. Click it to open the snapshot panel (use **More actions...** in the Threads view for the full menu).
+2. Confirm the status bar shows `Threads: In session`. Click it to open the snapshot panel. The Threads sidebar exposes structured sections (Resume, Continue, History, Settings & Tools).
 3. Open and save any file in `testing/src/` (e.g., `demo.py`, `demo.ts`, `notes.md`) to emit `file_edit` and `file_focus` events.
 4. Use **Threads: Save State Now** from the Command Palette (Ctrl+Shift+P) to end the session, generate a snapshot, and immediately start a new one. This also writes `.threads/last-session.md` in the workspace with a markdown summary that LLMs can ingest.
 5. Use **Threads: Show Last State** to open the snapshot webview; verify sections and the buttons:
    - Resume workspace
    - Copy for LLM (choose a mode)
+   - Continue with AI (optional)
    - Start here actions (open anchor / resume / copy for LLM)
 6. Use **Threads: Open Last Summary Markdown** to open the generated `.threads/last-session.md` file.
 7. Use **Threads: Browse Snapshots** to view older snapshots from history.
-8. If `threads.runtimeMode=remote`, watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
+8. Run **Threads: Run Smoke Test** to validate local storage, checkpointing, and markdown outputs.
+9. If `threads.runtimeMode=remote`, watch backend logs for `/session/start`, `/events`, `/session/end`, `/project/latest_snapshot` and check Supabase tables for new rows.
 9. Optional: run **Threads: Export Context Bundle (Markdown)** to generate `.threads/context-bundle.md` (great to paste into an AI assistant when you return later).
 10. Optional: run **Threads: Resume Where I Left Off** to reopen the exact files you touched last session (best-effort cursor + column restore, and reveals the anchor file in Explorer).
 11. Optional: do nothing for a few minutes after activity; auto-checkpoint should create a snapshot without opening any panels.
@@ -54,6 +56,12 @@ This will hit `/health` and `/session/start` with the current repo path.
 # LLM formatting + redaction (run after npm run compile)
 node .\scripts\llm-format-test.js
 ```
+
+## VS Code tasks (PowerShell ExecutionPolicy Bypass)
+Run via **Terminal > Run Task**:
+- Threads: Verify last-session state
+- Threads: Verify snapshot files
+- Threads: Backend smoke (optional)
 
 ## Optional: backend end-to-end script
 ```powershell

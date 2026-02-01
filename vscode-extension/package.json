@@ -19,10 +19,12 @@
     "onCommand:threads.diagnostics",
     "onCommand:threads.checkpointNow",
     "onCommand:threads.copyForLLM",
+    "onCommand:threads.continueWithAi",
     "onCommand:threads.openAnchorFile",
     "onCommand:threads.runLastTask",
     "onCommand:threads.configureLlm",
     "onCommand:threads.testLlmConnection",
+    "onCommand:threads.runSmokeTest",
     "onCommand:threads.openDataFolder",
     "onCommand:threads.deleteLocalData",
     "onCommand:threads.sendFeedback",
@@ -84,6 +86,10 @@
         "title": "Threads: Copy for LLM"
       },
       {
+        "command": "threads.continueWithAi",
+        "title": "Threads: Continue with AI"
+      },
+      {
         "command": "threads.openAnchorFile",
         "title": "Threads: Open Anchor File"
       },
@@ -93,11 +99,15 @@
       },
       {
         "command": "threads.configureLlm",
-        "title": "Threads: Configure LLM"
+        "title": "Threads: Enhance with AI (Optional)"
       },
       {
         "command": "threads.testLlmConnection",
         "title": "Threads: Test LLM Connection"
+      },
+      {
+        "command": "threads.runSmokeTest",
+        "title": "Threads: Run Smoke Test"
       },
       {
         "command": "threads.openDataFolder",
@@ -252,7 +262,12 @@
           "type": "string",
           "enum": ["none", "ollama", "openai"],
           "default": "none",
-          "description": "LLM provider for enhanced summaries and handoff generation."
+          "description": "LLM provider for enhanced summaries and handoff generation (requires threads.llm.enabled)."
+        },
+        "threads.llm.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable AI enhancements (optional)."
         },
         "threads.llm.ollamaUrl": {
           "type": "string",
@@ -273,6 +288,28 @@
           "type": "string",
           "default": "",
           "description": "Optional OpenAI base URL for proxies."
+        },
+        "threads.llm.includeDiffStatsOnly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only include diff stats (counts), not file lists, in AI handoffs."
+        },
+        "threads.llm.includeFilePaths": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include file paths in AI handoffs."
+        },
+        "threads.llm.redactHomeDir": {
+          "type": "boolean",
+          "default": true,
+          "description": "Redact your home directory from AI handoffs (replaced with ~)."
+        },
+        "threads.llm.maxFiles": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of files to include in AI handoffs."
         },
         "threads.llm.includeCodeSnippets": {
           "type": "boolean",

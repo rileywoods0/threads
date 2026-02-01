@@ -21,10 +21,12 @@ type LastSessionState = {
 type NodeType =
   | 'firstRun'
   | 'firstRunInfo'
-  | 'resume'
+  | 'resumeSection'
   | 'lastSession'
+  | 'continueSection'
+  | 'historySection'
+  | 'settingsSection'
   | 'recentSnapshots'
-  | 'moreActions'
   | 'info'
   | 'snapshotMd'
   | 'viewAll';
@@ -143,24 +145,32 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       firstRun.iconPath = new vscode.ThemeIcon('info');
       firstRun.description = didCheckpoint ? undefined : 'Quick tips';
 
-      const resume = new ThreadsNode('resume', 'Resume workspace');
-      resume.iconPath = new vscode.ThemeIcon('play');
-      resume.command = { command: 'threads.resumeWhereILeftOff', title: 'Resume workspace' };
+      const resumeSection = new ThreadsNode('resumeSection', 'Resume', vscode.TreeItemCollapsibleState.Expanded);
+      resumeSection.iconPath = new vscode.ThemeIcon('play');
 
       const lastSession = new ThreadsNode('lastSession', 'Last session', vscode.TreeItemCollapsibleState.Expanded);
       lastSession.iconPath = new vscode.ThemeIcon('clock');
       lastSession.description = age ?? undefined;
 
-      const recent = new ThreadsNode('recentSnapshots', 'Recent snapshots', vscode.TreeItemCollapsibleState.Collapsed);
-      recent.iconPath = new vscode.ThemeIcon('history');
+      const continueSection = new ThreadsNode('continueSection', 'Continue', vscode.TreeItemCollapsibleState.Collapsed);
+      continueSection.iconPath = new vscode.ThemeIcon('sparkle');
 
-      const more = new ThreadsNode('moreActions', 'More actions...');
-      more.iconPath = new vscode.ThemeIcon('ellipsis');
-      more.command = { command: 'threads.statusMenu', title: 'More actions' };
+      const historySection = new ThreadsNode('historySection', 'History', vscode.TreeItemCollapsibleState.Collapsed);
+      historySection.iconPath = new vscode.ThemeIcon('history');
+
+      const settingsSection = new ThreadsNode(
+        'settingsSection',
+        'Settings & Tools',
+        vscode.TreeItemCollapsibleState.Collapsed
+      );
+      settingsSection.iconPath = new vscode.ThemeIcon('tools');
 
       // Keep the home view minimal. Goal/Next are shown under Last session.
-      // Recent snapshots is collapsed by default for progressive disclosure.
-      return (didCheckpoint ? [resume, lastSession, recent, more] : [firstRun, resume, lastSession, recent, more]).filter(Boolean);
+      // History + Settings are collapsed by default for progressive disclosure.
+      return (didCheckpoint
+        ? [resumeSection, lastSession, continueSection, historySection, settingsSection]
+        : [firstRun, resumeSection, lastSession, continueSection, historySection, settingsSection]
+      ).filter(Boolean);
     }
 
     if (element.nodeType === 'firstRun') {
@@ -174,10 +184,10 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       copyTip.iconPath = new vscode.ThemeIcon('copy');
       copyTip.command = { command: 'threads.copyForLLM', title: 'Copy for LLM' };
 
-      const llmTip = new ThreadsNode('firstRunInfo', 'Configure LLM');
+      const llmTip = new ThreadsNode('firstRunInfo', 'Enhance with AI (Optional)');
       llmTip.description = 'Optional: Ollama or BYO key';
       llmTip.iconPath = new vscode.ThemeIcon('sparkle');
-      llmTip.command = { command: 'threads.configureLlm', title: 'Configure LLM' };
+      llmTip.command = { command: 'threads.configureLlm', title: 'Enhance with AI (Optional)' };
 
       const checkpointsTip = new ThreadsNode('firstRunInfo', 'Auto-checkpoints');
       checkpointsTip.description = 'Quiet snapshots while you work';
@@ -185,6 +195,20 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       checkpointsTip.command = { command: 'threads.diagnostics', title: 'Diagnostics' };
 
       return [resumeTip, copyTip, llmTip, checkpointsTip];
+    }
+
+    if (element.nodeType === 'resumeSection') {
+      const resume = new ThreadsNode('info', 'Resume workspace');
+      resume.description = 'Reopen files + cursor (best effort)';
+      resume.iconPath = new vscode.ThemeIcon('play');
+      resume.command = { command: 'threads.resumeWhereILeftOff', title: 'Resume workspace' };
+
+      const anchor = new ThreadsNode('info', 'Open anchor file');
+      anchor.description = 'Jump to your last active file';
+      anchor.iconPath = new vscode.ThemeIcon('pin');
+      anchor.command = { command: 'threads.openAnchorFile', title: 'Open anchor file' };
+
+      return [resume, anchor];
     }
 
     if (element.nodeType === 'lastSession') {
@@ -229,12 +253,75 @@ export class ThreadsViewProvider implements vscode.TreeDataProvider<ThreadsNode>
       return [goalNode, nextNode, filesNode, anchorNode, openPanel];
     }
 
-    if (element.nodeType === 'recentSnapshots') {
+    if (element.nodeType === 'continueSection') {
+      const continueAi = new ThreadsNode('info', 'Continue with AI');
+      continueAi.description = 'Optional, privacy-first';
+      continueAi.iconPath = new vscode.ThemeIcon('sparkle');
+      continueAi.command = { command: 'threads.continueWithAi', title: 'Continue with AI' };
+
+      const copy = new ThreadsNode('info', 'Copy for LLM');
+      copy.description = 'Paste-ready resume context';
+      copy.iconPath = new vscode.ThemeIcon('copy');
+      copy.command = { command: 'threads.copyForLLM', title: 'Copy for LLM' };
+
+      const runTask = new ThreadsNode('info', 'Run last task');
+      runTask.description = 'Best-effort re-run last task';
+      runTask.iconPath = new vscode.ThemeIcon('run');
+      runTask.command = { command: 'threads.runLastTask', title: 'Run last task' };
+
+      return [continueAi, copy, runTask];
+    }
+
+    if (element.nodeType === 'historySection') {
       const nodes = await this.getRecentSnapshotMarkdownNodes(5);
       const viewAll = new ThreadsNode('viewAll', 'View all...');
       viewAll.iconPath = new vscode.ThemeIcon('search');
       viewAll.command = { command: 'threads.browseSnapshots', title: 'Browse snapshots' };
       return [...nodes, viewAll];
+    }
+
+    if (element.nodeType === 'settingsSection') {
+      const configure = new ThreadsNode('info', 'Enhance with AI (Optional)');
+      configure.description = 'Set provider + model';
+      configure.iconPath = new vscode.ThemeIcon('settings-gear');
+      configure.command = { command: 'threads.configureLlm', title: 'Enhance with AI (Optional)' };
+
+      const test = new ThreadsNode('info', 'Test LLM connection');
+      test.description = 'Quick connectivity check';
+      test.iconPath = new vscode.ThemeIcon('beaker');
+      test.command = { command: 'threads.testLlmConnection', title: 'Test LLM connection' };
+
+      const diagnostics = new ThreadsNode('info', 'Diagnostics');
+      diagnostics.description = 'Runtime state';
+      diagnostics.iconPath = new vscode.ThemeIcon('pulse');
+      diagnostics.command = { command: 'threads.diagnostics', title: 'Diagnostics' };
+
+      const smoke = new ThreadsNode('info', 'Run smoke test');
+      smoke.description = 'One-click validation checks';
+      smoke.iconPath = new vscode.ThemeIcon('check');
+      smoke.command = { command: 'threads.runSmokeTest', title: 'Run smoke test' };
+
+      const openData = new ThreadsNode('info', 'Open data folder');
+      openData.description = 'Show local Threads data';
+      openData.iconPath = new vscode.ThemeIcon('folder-opened');
+      openData.command = { command: 'threads.openDataFolder', title: 'Open data folder' };
+
+      const deleteData = new ThreadsNode('info', 'Delete local data');
+      deleteData.description = 'Remove .threads data';
+      deleteData.iconPath = new vscode.ThemeIcon('trash');
+      deleteData.command = { command: 'threads.deleteLocalData', title: 'Delete local data' };
+
+      const feedback = new ThreadsNode('info', 'Send feedback');
+      feedback.description = 'Opens/copies a feedback template';
+      feedback.iconPath = new vscode.ThemeIcon('feedback');
+      feedback.command = { command: 'threads.sendFeedback', title: 'Send feedback' };
+
+      const output = new ThreadsNode('info', 'Show output log');
+      output.description = 'Threads output channel';
+      output.iconPath = new vscode.ThemeIcon('output');
+      output.command = { command: 'threads.showOutput', title: 'Show output log' };
+
+      return [configure, test, diagnostics, smoke, openData, deleteData, feedback, output];
     }
 
     return [];
