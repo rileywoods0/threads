@@ -21,6 +21,7 @@ Threads is a developer memory prototype with a VS Code extension that captures I
 Run **Threads: Enhance with AI (Optional)** (this sets `threads.llm.enabled = true`):
 - **Ollama (local)**: set `threads.llm.ollamaUrl` + `threads.llm.ollamaModel`.
 - **OpenAI (BYO key)**: key is stored in VS Code SecretStorage (never written to disk).
+- Reliability controls: `threads.llm.requestTimeoutMs` and `threads.llm.maxRetries`.
 
 ## Advanced: Supabase sync (remote mode)
 1. Create (or reuse) a Supabase project.
@@ -78,6 +79,11 @@ If you are in local mode, no backend logs are required.
 - Local data lives under `threads.dataDir` (default `${workspaceFolder}/.threads`).
 - Use **Threads: Delete Local Data** to wipe local state.
 
+## Multi-project behavior
+- Threads is local-first per workspace.
+- In local mode, snapshot history is filtered by workspace root path, so different projects do not mix when using a shared data directory.
+- Remote mode already scopes snapshot APIs by `root_path`.
+
 ## Testing & Verification Guide
 - **Local-only (no backend):**
   - Use the Extension Development Host with the `testing/` workspace and follow `testing/CHECKLIST.md`.
@@ -115,6 +121,11 @@ If you are in local mode, no backend logs are required.
 - **No requests hitting backend:** verify `threads.runtimeMode=remote` and `threads.remote.backendUrl` in VS Code settings, then confirm `Invoke-RestMethod -Uri "http://localhost:8000/health" -Method Get` succeeds.
 - **No Supabase writes:** confirm `.env` values are loaded; backend logs will print Supabase errors to the console.
 - **Webview not updating:** use **Threads: Save State Now** to flush events and create a snapshot, then re-open **Threads: Show Last State**.
+- **Ollama `fetch failed` / `Headers Timeout Error`:**
+  1. Confirm Ollama is running: `Invoke-RestMethod http://localhost:11434/api/tags`
+  2. Warm model once: `ollama run <your-model>`
+  3. Increase `threads.llm.requestTimeoutMs` (example: `180000`)
+  4. Increase `threads.llm.maxRetries` (example: `2`)
 
 ## Notes
 - Secrets stay in your local `.env`; none are committed.

@@ -74,6 +74,7 @@ This checklist is designed to confirm Threads end-to-end behavior with minimal g
 ## 6c) Continue with AI (optional)
 - Run **Threads: Enhance with AI (Optional)** or click **Continue with AI** in the sidebar.
 - Confirm it copies a handoff without opening panels.
+- If using Ollama and first request is slow, tune `threads.llm.requestTimeoutMs` and `threads.llm.maxRetries`.
 
 ## 6d) Redaction settings
 - With `threads.export.redactHomeDir=true` (default), exported file paths should show `~` instead of your home directory.

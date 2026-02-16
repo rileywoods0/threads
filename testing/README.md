@@ -75,5 +75,6 @@ This runs: `/health` -> `/session/start` -> `/events` -> `/session/end` -> snaps
 - If you see a `punycode` deprecation warning in the debug console, it is coming from a dependency and is safe to ignore.
 - `threads.autoCheckpoint.*` is set to short values in this workspace so you can verify interval/idle triggers quickly.
 - `threads.runtimeMode` defaults to `local` (no backend required). Switch to `remote` to test Supabase sync.
+- If Ollama responses are slow, increase `threads.llm.requestTimeoutMs` and `threads.llm.maxRetries`.
 - The sample files in `src/` cover multiple languages to exercise event payloads.
 - The markdown summary lives at `.threads/last-session.md` after you save a session - perfect to hand to Copilot/Cursor/Claude as context when reopening the project.

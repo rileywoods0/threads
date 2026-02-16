@@ -22,3 +22,4 @@
 - Generated handoff is metadata-only by default (no code).
 - Home directory paths are redacted.
 - Failure to connect shows an error and does not block core snapshot functionality.
+- If Ollama is slow to respond, increase `threads.llm.requestTimeoutMs` and `threads.llm.maxRetries`.

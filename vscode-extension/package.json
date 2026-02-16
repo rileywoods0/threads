@@ -1,7 +1,7 @@
 {
   "name": "threads-memory",
   "displayName": "Threads: Flow Resume",
-  "description": "Capture and recall developer context using a Threads backend.",
+  "description": "Capture and recall developer context with local-first flow memory.",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.85.0"
@@ -310,6 +310,19 @@
           "minimum": 1,
           "maximum": 50,
           "description": "Maximum number of files to include in AI handoffs."
+        },
+        "threads.llm.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "HTTP timeout in milliseconds for AI provider requests."
+        },
+        "threads.llm.maxRetries": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Retry count for AI provider request failures/timeouts."
         },
         "threads.llm.includeCodeSnippets": {
           "type": "boolean",

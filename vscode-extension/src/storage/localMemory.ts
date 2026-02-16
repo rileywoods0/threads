@@ -200,6 +200,18 @@ export function generateLocalSnapshot(
   }
 
   const openIssues = lastSnapshot ? ensureStringList(lastSnapshot.open_issues) : [];
+  if (tasksStarted > ((eventCounts.get('task_end') ?? 0) + (eventCounts.get('task.end') ?? 0))) {
+    openIssues.push('A task started but did not finish; rerun task output to confirm current state.');
+  }
+  if (
+    ((eventCounts.get('debug_start') ?? 0) + (eventCounts.get('debug.start') ?? 0)) >
+    ((eventCounts.get('debug_end') ?? 0) + (eventCounts.get('debug.end') ?? 0))
+  ) {
+    openIssues.push('A debug session started but did not terminate cleanly.');
+  }
+  if (branchChanges > 0 && filesTouched.length > 0) {
+    openIssues.push('Branch changed during active edits; verify pending changes before continuing.');
+  }
 
   const nextSteps: string[] = [];
   if (filesTouched.length) {

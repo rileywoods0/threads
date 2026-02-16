@@ -1,5 +1,6 @@
 import { buildHandoffText, buildSummaryPrompt } from './formatting';
 import { LlmHandoffInput, LlmProvider, LlmSummaryInput, LlmSummaryOutput, LlmTestResult } from './types';
+import { fetchWithRetry, formatFetchError } from './http';
 import { extractJsonBlock, normalizeSummary } from './utils';
 
 export class OpenAIProvider implements LlmProvider {
@@ -7,11 +8,15 @@ export class OpenAIProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly retries: number;
 
-  constructor(apiKey: string, model: string, baseUrl?: string) {
+  constructor(apiKey: string, model: string, timeoutMs: number, retries: number, baseUrl?: string) {
     this.apiKey = apiKey;
     this.model = model;
     this.baseUrl = (baseUrl || 'https://api.openai.com').replace(/\/$/, '');
+    this.timeoutMs = Math.max(5000, timeoutMs);
+    this.retries = Math.max(0, retries);
   }
 
   isConfigured(): boolean {
@@ -19,14 +24,18 @@ export class OpenAIProvider implements LlmProvider {
   }
 
   private async postJson(path: string, body: Record<string, unknown>) {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`
+    const response = await fetchWithRetry(
+      `${this.baseUrl}${path}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify(body)
       },
-      body: JSON.stringify(body)
-    });
+      { timeoutMs: this.timeoutMs, retries: this.retries }
+    );
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`OpenAI ${response.status}: ${text}`);
@@ -44,7 +53,7 @@ export class OpenAIProvider implements LlmProvider {
       });
       return { ok: true, message: 'OpenAI connection OK.' };
     } catch (err) {
-      return { ok: false, message: `OpenAI connection failed: ${String(err)}` };
+      return { ok: false, message: formatFetchError(err, 'OpenAI connection') };
     }
   }
 

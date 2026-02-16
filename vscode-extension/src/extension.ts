@@ -126,6 +126,8 @@ function getConfig() {
         config.get<boolean>('export.redactHomeDir', true)
       ),
       maxFiles: config.get<number>('llm.maxFiles', config.get<number>('export.maxFiles', 10)),
+      requestTimeoutMs: config.get<number>('llm.requestTimeoutMs', 120000),
+      maxRetries: config.get<number>('llm.maxRetries', 1),
       ollamaUrl: config.get<string>('llm.ollamaUrl', 'http://localhost:11434'),
       ollamaModel: config.get<string>('llm.ollamaModel', 'llama3.1'),
       openaiModel: config.get<string>('llm.openaiModel', 'gpt-5.2-mini'),
@@ -178,7 +180,7 @@ async function getLlmProvider(): Promise<LlmProvider | null> {
   }
   if (llm.provider === 'ollama') {
     lastLlmProvider = 'ollama';
-    return new OllamaProvider(llm.ollamaUrl, llm.ollamaModel);
+    return new OllamaProvider(llm.ollamaUrl, llm.ollamaModel, llm.requestTimeoutMs, llm.maxRetries);
   }
   if (llm.provider === 'openai') {
     const apiKey = await extensionContext?.secrets.get('threads.openaiApiKey');
@@ -187,7 +189,13 @@ async function getLlmProvider(): Promise<LlmProvider | null> {
       return null;
     }
     lastLlmProvider = 'openai';
-    return new OpenAIProvider(apiKey, llm.openaiModel, llm.openaiBaseUrl || undefined);
+    return new OpenAIProvider(
+      apiKey,
+      llm.openaiModel,
+      llm.requestTimeoutMs,
+      llm.maxRetries,
+      llm.openaiBaseUrl || undefined
+    );
   }
   return null;
 }
@@ -1881,7 +1889,18 @@ async function configureLlm() {
     return;
   }
 
-  await configureLlmProvider(pick.value as 'ollama' | 'openai');
+  const configured = await configureLlmProvider(pick.value as 'ollama' | 'openai');
+  if (!configured) {
+    return;
+  }
+  const shouldTest = await vscode.window.showInformationMessage(
+    'Threads: AI configured. Test connection now?',
+    'Test',
+    'Later'
+  );
+  if (shouldTest === 'Test') {
+    await testLlmConnection();
+  }
 }
 
 async function testLlmConnection() {
@@ -2074,6 +2093,8 @@ async function showDiagnostics() {
   lines.push(`LLM enabled: \`${llm.enabled ? 'yes' : 'no'}\``);
   lines.push(`LLM provider: \`${llm.provider}\``);
   lines.push(`LLM configured: \`${llmConfigured ? 'yes' : 'no'}\``);
+  lines.push(`LLM timeout ms: \`${llm.requestTimeoutMs}\``);
+  lines.push(`LLM retries: \`${llm.maxRetries}\``);
   lines.push(`Last summary source: \`${lastSummarySource}\``);
   lines.push(`Last LLM test: \`${lastLlmTestStatus ?? '(none)'}\``);
   lines.push('');

@@ -16,6 +16,8 @@ type SnapshotRecord = {
   id: string;
   session_id: string;
   created_at: string;
+  root_path?: string;
+  project_name?: string;
   reason?: string;
   snapshot: LocalSnapshot & { id?: string };
 };
@@ -99,7 +101,18 @@ export class LocalStorageAdapter implements StorageAdapter {
     }
   }
 
-  private async readLatestSnapshot(): Promise<SnapshotRecord | null> {
+  private normalizeRootPath(rootPath: string): string {
+    return path.normalize(rootPath).toLowerCase();
+  }
+
+  private matchesRoot(record: SnapshotRecord, rootPath: string): boolean {
+    if (!record.root_path) {
+      return true;
+    }
+    return this.normalizeRootPath(record.root_path) === this.normalizeRootPath(rootPath);
+  }
+
+  private async readLatestSnapshot(rootPath: string): Promise<SnapshotRecord | null> {
     try {
       const entries = await fs.readdir(this.snapshotsDir());
       const jsonFiles = entries.filter((name) => name.endsWith('.json'));
@@ -112,8 +125,9 @@ export class LocalStorageAdapter implements StorageAdapter {
           return JSON.parse(raw) as SnapshotRecord;
         })
       );
-      records.sort((a, b) => b.created_at.localeCompare(a.created_at));
-      return records[0];
+      const filtered = records.filter((record) => this.matchesRoot(record, rootPath));
+      filtered.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      return filtered[0] ?? null;
     } catch {
       return null;
     }
@@ -128,13 +142,15 @@ export class LocalStorageAdapter implements StorageAdapter {
       started_at: new Date().toISOString()
     };
     const events = await this.readEvents(sessionId);
-    const lastSnapshot = await this.readLatestSnapshot();
+    const lastSnapshot = await this.readLatestSnapshot(session.root_path);
     const snapshot = generateLocalSnapshot(session, events as any, lastSnapshot?.snapshot);
     const snapshotId = randomUUID();
     const record: SnapshotRecord = {
       id: snapshotId,
       session_id: sessionId,
       created_at: new Date().toISOString(),
+      root_path: session.root_path,
+      project_name: session.project_name,
       reason,
       snapshot: { ...snapshot, id: snapshotId }
     };
@@ -158,12 +174,12 @@ export class LocalStorageAdapter implements StorageAdapter {
     return record.snapshot;
   }
 
-  async fetchLatestSnapshot(_rootPath: string): Promise<Record<string, unknown> | null> {
-    const record = await this.readLatestSnapshot();
+  async fetchLatestSnapshot(rootPath: string): Promise<Record<string, unknown> | null> {
+    const record = await this.readLatestSnapshot(rootPath);
     return record ? record.snapshot : null;
   }
 
-  async listSnapshots(_rootPath: string, limit: number): Promise<SnapshotListItem[]> {
+  async listSnapshots(rootPath: string, limit: number): Promise<SnapshotListItem[]> {
     try {
       const entries = await fs.readdir(this.snapshotsDir());
       const jsonFiles = entries.filter((name) => name.endsWith('.json'));
@@ -173,8 +189,9 @@ export class LocalStorageAdapter implements StorageAdapter {
           return JSON.parse(raw) as SnapshotRecord;
         })
       );
-      records.sort((a, b) => b.created_at.localeCompare(a.created_at));
-      return records.slice(0, limit).map((record) => ({
+      const filtered = records.filter((record) => this.matchesRoot(record, rootPath));
+      filtered.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      return filtered.slice(0, limit).map((record) => ({
         id: record.id,
         session_id: record.session_id,
         created_at: record.created_at,
