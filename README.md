@@ -1,4 +1,4 @@
-# Threads (Local-first)
+# Threads
 
 Threads is a developer memory prototype with a VS Code extension that captures IDE activity to build lightweight memory snapshots. By default it runs fully local, with optional Supabase sync for advanced users.
 
